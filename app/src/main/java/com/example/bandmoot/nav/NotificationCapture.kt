@@ -18,7 +18,7 @@ import java.util.Locale
  * nav vs non-nav comparison is what reveals the reliable gate
  * (MiBandNotify uses channelId ∋ "navigation" + isOngoing; verify it holds).
  *
- * Files land in `<filesDir>/komoot_captures/*.txt` — pull with
+ * Files land in `<filesDir>/komoot_captures/<timestamp>.txt` — pull with
  * `adb pull <path>` or read in-app via MainActivity "Show last capture".
  */
 object NotificationCapture {
@@ -31,7 +31,7 @@ object NotificationCapture {
         val sb = StringBuilder()
         sb.appendLine("package=${sbn.packageName}")
         sb.appendLine("postTime=${SimpleDateFormat("HH:mm:ss", Locale.ROOT).format(Date(sbn.postTime))}")
-        sb.appendLine("isOngoing=${notif?.isOngoing} isLocalOnly=${notif?.let {
+        sb.appendLine("isOngoing=${sbn.isOngoing} isLocalOnly=${notif?.let {
             androidx.core.app.NotificationCompat.getLocalOnly(it)
         }}")
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -69,7 +69,7 @@ object NotificationCapture {
 
         val dir = File(ctx.filesDir, "komoot_captures").apply { mkdirs() }
         val name = "${SimpleDateFormat("yyyyMMdd_HHmmss", Locale.ROOT).format(Date())}" +
-            "_ongoing${notif?.isOngoing}.txt"
+            "_ongoing${sbn.isOngoing}.txt"
         val file = File(dir, name)
         file.writeText(sb.toString())
         ctx.getSharedPreferences(BandPrefs.NAME, Context.MODE_PRIVATE)

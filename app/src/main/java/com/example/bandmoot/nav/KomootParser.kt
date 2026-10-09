@@ -12,8 +12,8 @@ import android.service.notification.StatusBarNotification
  *   (`KomootActivity`, `GMapsActivity`/`OSMActivity` siblings stripped for this app)
  * - gate in `defpackage/ni3.java`: SDK 26+, `channelId.contains("navigation")`,
  *   `notification.isOngoing == true`
- * - fields in `ni3.f`: `EXTRA_TITLE`, `EXTRA_BIG_TEXT`/`EXTRA_TEXT`,
- *   `EXTRA_SHORT_CRITICAL_TEXT` + `notification.largeIcon` tint-filtered for
+ * - fields in `ni3.f`: `EXTRA_TITLE`, `EXTRA_SUMMARY_TEXT`, `EXTRA_BIG_TEXT`/`EXTRA_TEXT`,
+ *   + `notification.largeIcon` tint-filtered for
  *   `#4F850D`, resized to 105x105 and matched against Komoot drawables
  *   (`defpackage/dy4.java` 42-value turn enum, `vy2` similarity).
  *
@@ -29,7 +29,7 @@ object KomootParser {
         if (sbn.packageName != KOMOOT_PACKAGE) return false
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return false
         val notif = sbn.notification ?: return false
-        if (!notif.isOngoing) return false
+        if (!sbn.isOngoing) return false
         val channelId = notif.channelId ?: return false
         return "navigation" in channelId
     }
@@ -39,7 +39,7 @@ object KomootParser {
         val extras = notif.extras ?: return null
         val title = sequenceOf(
             extras.getCharSequence(Notification.EXTRA_TITLE),
-            extras.getCharSequence(Notification.EXTRA_SHORT_CRITICAL_TEXT),
+            extras.getCharSequence(Notification.EXTRA_SUMMARY_TEXT),
         ).firstOrNull { !it.isNullOrBlank() }?.toString().orEmpty()
         val detail = sequenceOf(
             extras.getCharSequence(Notification.EXTRA_BIG_TEXT),

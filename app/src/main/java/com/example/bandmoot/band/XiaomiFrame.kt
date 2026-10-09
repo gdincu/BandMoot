@@ -67,7 +67,7 @@ object XiaomiFrame {
             .array()
 
     fun chunkCount(payloadSize: Int, maxWrite: Int): Int =
-        Math.ceil(payloadSize / (maxWrite - 2).toFloat()).toInt().coerceAtLeast(1)
+        Math.ceil(payloadSize / (maxWrite - 2).toDouble()).toInt().coerceAtLeast(1)
 
     sealed interface Incoming {
         /** Band started a chunked transfer: [count] chunks will follow. Reply CHUNK_START_ACK. */

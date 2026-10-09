@@ -307,7 +307,7 @@ class XiaomiLink(
                 val payload = if (k != null) {
                     runCatching {
                         XiaomiCrypto.decrypt(k.decryptionKey, k.decryptionNonce, 0, full)
-                    }.getElse { full }
+                    }.getOrElse { full }
                 } else {
                     full
                 }

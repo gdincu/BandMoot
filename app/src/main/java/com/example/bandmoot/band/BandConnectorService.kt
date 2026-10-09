@@ -169,6 +169,9 @@ class BandConnectorService : Service() {
 
         fun bluetoothManager(ctx: Context) =
             ctx.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
+
+        const val CHANNEL_ID = "band_link"
+        const val NOTIF_ID = 41
     }
 
     private fun startAsForeground() {
@@ -222,10 +225,5 @@ class BandConnectorService : Service() {
             .setOngoing(true)
             .build()
         mgr.notify(NOTIF_ID, notif)
-    }
-
-    private companion object {
-        const val CHANNEL_ID = "band_link"
-        const val NOTIF_ID = 41
     }
 }
