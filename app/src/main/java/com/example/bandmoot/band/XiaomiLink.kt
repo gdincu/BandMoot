@@ -181,7 +181,7 @@ class XiaomiLink(
 
     // ---------- internals ----------
 
-    private var connectedLatch = CountDownLatch(1)
+    @Volatile private var connectedLatch = CountDownLatch(1)
 
     private val gattCallback = object : BluetoothGattCallback() {
         override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
@@ -220,20 +220,28 @@ class XiaomiLink(
             notifyLatch.countDown()
         }
 
+        // Protocol-ack latches are signalled HERE on the binder thread, not on
+        // `io`: `io` is blocked inside writeCommand awaiting these latches
+        // during auth, so queueing the signal behind `io` deadlocks and always
+        // times out ("setup: auth step 1: no ack (result=-1)"). Only the heavy
+        // decrypt/dispatch goes to `io`.
         override fun onCharacteristicChanged(
             g: BluetoothGatt,
             characteristic: BluetoothGattCharacteristic,
             value: ByteArray,
         ) {
+            signalProtocolAcks(value)
             io.execute {
-                runCatching { onIncoming(value) }.onFailure { fail("incoming: ${it.message}") }
+                runCatching { onIncomingRouted(value) }.onFailure { fail("incoming: ${it.message}") }
             }
         }
 
         @Suppress("DEPRECATION")
         override fun onCharacteristicChanged(g: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
+            val v = characteristic.value ?: return
+            signalProtocolAcks(v)
             io.execute {
-                runCatching { onIncoming(characteristic.value ?: return@execute) }
+                runCatching { onIncomingRouted(v) }
                     .onFailure { fail("incoming: ${it.message}") }
             }
         }
@@ -245,8 +253,8 @@ class XiaomiLink(
         }
     }
 
-    private var mtuLatch = CountDownLatch(1)
-    private var notifyLatch = CountDownLatch(1)
+    @Volatile private var mtuLatch = CountDownLatch(1)
+    @Volatile private var notifyLatch = CountDownLatch(1)
 
     private fun onServicesReady(g: BluetoothGatt) {
         val svc = g.getService(XiaomiProtocol.SERVICE_FE95)
@@ -298,6 +306,56 @@ class XiaomiLink(
         log("Auth step 1: sending phone nonce…")
         writeCommand(XiaomiCrypto.buildNonceCommand(phoneNonce).toByteArray(), "auth step 1")
         // step 2+3 continue in onIncoming when the WatchNonce arrives
+    }
+
+    /**
+     * Fast path on the BLE binder thread: unblock writeCommand immediately.
+     * Must never do GATT writes or touch `io` here.
+     */
+    private fun signalProtocolAcks(value: ByteArray) {
+        when (val msg = XiaomiFrame.decode(value)) {
+            is XiaomiFrame.Incoming.Ack -> {
+                ackResult = msg.result
+                ackLatch?.countDown()
+            }
+            XiaomiFrame.Incoming.ChunkAckStart -> chunkLatch?.countDown()
+            XiaomiFrame.Incoming.ChunkAckEnd -> chunkEndLatch?.countDown()
+            XiaomiFrame.Incoming.ChunkNack -> {
+                chunkEndLatch?.countDown()
+                ackLatch?.countDown()
+            }
+            is XiaomiFrame.Incoming.ChunkResend -> {
+                pendingResend = msg.indices
+                chunkLatch?.countDown() // wake sender to resend listed chunks
+            }
+            else -> Unit // Single/ChunkedStart/Chunk handled on `io`
+        }
+    }
+
+    /** Heavy path on `io`: ack incoming payloads, decrypt, dispatch commands. */
+    private fun onIncomingRouted(value: ByteArray) {
+        when (val msg = XiaomiFrame.decode(value)) {
+            is XiaomiFrame.Incoming.Ack -> {
+                log("rx ack result=${msg.result}")
+                return // latch already signalled on the binder thread
+            }
+            XiaomiFrame.Incoming.ChunkAckStart -> {
+                log("rx chunk-start-ack")
+                return
+            }
+            XiaomiFrame.Incoming.ChunkAckEnd -> {
+                log("rx chunk-end-ack")
+                return
+            }
+            XiaomiFrame.Incoming.ChunkNack,
+            is XiaomiFrame.Incoming.ChunkResend,
+            is XiaomiFrame.Incoming.MissingChunks,
+            -> {
+                if (msg is XiaomiFrame.Incoming.MissingChunks) sendMissing(msg.indices)
+                return
+            }
+            else -> onIncoming(value)
+        }
     }
 
     private fun onIncoming(value: ByteArray) {
@@ -405,6 +463,7 @@ class XiaomiLink(
         }
         val maxWrite = XiaomiFrame.maxWriteSize(mtu)
         if (!XiaomiFrame.shouldWriteChunked(bytes.size, ready, maxWrite)) {
+            ackResult = -1
             ackLatch = CountDownLatch(1)
             val packet = XiaomiFrame.encodeSingle(
                 bytes,
