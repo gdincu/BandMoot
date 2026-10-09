@@ -17,9 +17,18 @@ import android.service.notification.StatusBarNotification
  *   `#4F850D`, resized to 105x105 and matched against Komoot drawables
  *   (`defpackage/dy4.java` 42-value turn enum, `vy2` similarity).
  *
- * TODO(bike-nav): capture 2-3 live Komoot notifications (title/bigText/largeIcon
- * bitmap) during a test ride and tighten [from]/[matchIcon]; start with text-only
- * forwarding so turns are readable even before icon mapping exists.
+ * Observed live shape (Komoot 2026.40.x, `channel_live_navigation`,
+ * `category=navigation`, `ProgressStyle` Live Update):
+ * - title = status or turn text ("No GPS • Ensure you have a clear view of the sky")
+ * - `android.shortCriticalText` (literal key: no SDK constant exists for it
+ *   yet, but Komoot posts it) = short status/turn text ("No GPS")
+ * - turn arrow arrives as `largeIcon` bitmap (icon matching = TODO)
+ * - `progressSegments` Bundle + one action button (contents TBD from a
+ *   real-turn capture)
+ *
+ * TODO(bike-nav): capture a real approaching-turn notification (with GPS) and
+ * tighten [from]/[matchIcon]; start with text-only forwarding so turns are
+ * readable even before icon mapping exists.
  */
 object KomootParser {
 
@@ -39,6 +48,10 @@ object KomootParser {
         val extras = notif.extras ?: return null
         val title = sequenceOf(
             extras.getCharSequence(Notification.EXTRA_TITLE),
+            // Literal key: Komoot posts live-nav text under
+            // "android.shortCriticalText" but no Notification.EXTRA_* constant
+            // exists for it in the compile SDK, so reference it by string.
+            extras.getCharSequence("android.shortCriticalText"),
             extras.getCharSequence(Notification.EXTRA_SUMMARY_TEXT),
         ).firstOrNull { !it.isNullOrBlank() }?.toString().orEmpty()
         val detail = sequenceOf(

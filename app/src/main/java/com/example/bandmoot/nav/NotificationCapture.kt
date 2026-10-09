@@ -50,10 +50,15 @@ object NotificationCapture {
                     null -> "null"
                     is CharSequence -> v.toString().take(300)
                     is Array<*> -> v.joinToString(" | ").take(300)
+                    is android.os.Bundle -> bundleSummary(v)
+                    is ArrayList<*> -> v.joinToString(" | ") { item ->
+                        if (item is android.os.Bundle) bundleSummary(item) else item.toString()
+                    }.take(300)
                     else -> "${v.javaClass.simpleName}=$v".take(200)
                 }
                 sb.appendLine("$key=$shown")
             }
+            sb.appendLine("actionTitles=${notif?.actions?.joinToString(" | ") { it.title?.toString().orEmpty() }}")
             sb.appendLine("hasLargeIcon=${extras.containsKey(Notification.EXTRA_LARGE_ICON)}")
             sb.appendLine("TITLE=${extras.getCharSequence(Notification.EXTRA_TITLE)}")
             sb.appendLine("TEXT=${extras.getCharSequence(Notification.EXTRA_TEXT)}")
@@ -83,6 +88,9 @@ object NotificationCapture {
             .getString(PREF_LAST_CAPTURE, null) ?: return null
         return File(path).takeIf { it.exists() }
     }
+
+    private fun bundleSummary(b: android.os.Bundle): String =
+        "Bundle{${b.keySet().sorted().joinToString(", ") { k -> "$k=${b.get(k)?.toString()?.take(60)}" }}}"
 }
 
 /** Shared prefs name + known-device defaults (see MainActivity). */
