@@ -118,6 +118,20 @@ class MainActivity : AppCompatActivity() {
         if (prefs().getString(BandConnectorService.PREF_MAC, null).isNullOrBlank()) {
             prefs().edit().putString(BandConnectorService.PREF_MAC, DEFAULT_MAC).apply()
         }
+
+        // Foreground-service status ("Band link" entry) is suppressed entirely
+        // without this on API 33+; the app never asked, so first-run users see
+        // no entry and miss the link state.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ActivityCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            ActivityCompat.requestPermissions(
+                this,
+                arrayOf(Manifest.permission.POST_NOTIFICATIONS),
+                8,
+            )
+        }
     }
 
     override fun onResume() {

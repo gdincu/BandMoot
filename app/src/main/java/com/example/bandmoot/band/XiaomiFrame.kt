@@ -28,10 +28,12 @@ object XiaomiFrame {
     /** Default max write = MTU 247 - 3 ATT overhead (XiaomiCharacteristic). */
     fun maxWriteSize(mtu: Int): Int = mtu - 3
 
-    /** Encrypted payloads go chunked when payload + 6 header bytes exceed the MTU window. */
+    /** Single write when the framed payload fits the MTU window, chunked otherwise.
+     * (Small commands — e.g. the plaintext auth handshake — must go out single;
+     * the band ignores chunked-start for payloads that would fit in one write.) */
     fun shouldWriteChunked(payloadSize: Int, encrypted: Boolean, maxWrite: Int): Boolean {
-        if (!encrypted) return true // non-encrypted are always chunked
-        return payloadSize + 6 > maxWrite
+        val header = if (encrypted) 6 else 4
+        return payloadSize + header > maxWrite
     }
 
     fun encodeSingle(payload: ByteArray, encrypted: Boolean, encIndex: Int): ByteArray {

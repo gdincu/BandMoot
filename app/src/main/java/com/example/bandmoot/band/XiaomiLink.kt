@@ -301,6 +301,7 @@ class XiaomiLink(
     private fun onIncoming(value: ByteArray) {
         when (val msg = XiaomiFrame.decode(value)) {
             is XiaomiFrame.Incoming.Single -> {
+                log("rx single ${if (msg.encrypted) "enc" else "plain"} ${msg.payload.size}B")
                 sendRaw(XiaomiFrame.PAYLOAD_ACK, "ack")
                 val payload = if (msg.encrypted) {
                     val k = keys ?: return
@@ -311,10 +312,12 @@ class XiaomiLink(
                 onCommand(payload)
             }
             is XiaomiFrame.Incoming.ChunkedStart -> {
+                log("rx chunked-start enc=${msg.encrypted} count=${msg.count}")
                 sendRaw(XiaomiFrame.CHUNK_START_ACK, "chunk start ack")
                 reassembler.feed(msg)
             }
             is XiaomiFrame.Incoming.Chunk -> {
+                log("rx chunk idx=${msg.index} ${msg.bytes.size}B")
                 val full = reassembler.feed(msg) ?: return
                 sendRaw(XiaomiFrame.CHUNK_END_ACK, "chunk end ack")
                 val k = keys
@@ -328,11 +331,18 @@ class XiaomiLink(
                 onCommand(payload)
             }
             is XiaomiFrame.Incoming.Ack -> {
+                log("rx ack result=${msg.result}")
                 ackResult = msg.result
                 ackLatch?.countDown()
             }
-            XiaomiFrame.Incoming.ChunkAckStart -> chunkLatch?.countDown()
-            XiaomiFrame.Incoming.ChunkAckEnd -> chunkEndLatch?.countDown()
+            XiaomiFrame.Incoming.ChunkAckStart -> {
+                log("rx chunk-start-ack")
+                chunkLatch?.countDown()
+            }
+            XiaomiFrame.Incoming.ChunkAckEnd -> {
+                log("rx chunk-end-ack")
+                chunkEndLatch?.countDown()
+            }
             XiaomiFrame.Incoming.ChunkNack -> {
                 chunkEndLatch?.countDown()
                 ackLatch?.countDown()
@@ -404,6 +414,7 @@ class XiaomiLink(
             if (ackLatch!!.await(5, TimeUnit.SECONDS).not() || ackResult != 0) {
                 throw IllegalStateException("$task: no ack (result=$ackResult)")
             }
+            log("$task: ack ok")
             return
         }
         // chunked
@@ -431,6 +442,7 @@ class XiaomiLink(
         if (!chunkEndLatch!!.await(8, TimeUnit.SECONDS)) {
             throw IllegalStateException("$task: no chunk-end ack")
         }
+        log("$task: chunks acked")
     }
 
     private fun sendMissing(indices: ShortArray) {
