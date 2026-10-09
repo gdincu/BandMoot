@@ -1,5 +1,6 @@
 package com.example.bandmoot.band
 
+import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -10,10 +11,13 @@ import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanSettings
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import com.example.bandmoot.MainActivity
 import com.example.bandmoot.nav.TurnType
 
@@ -144,6 +148,7 @@ class BandConnectorService : Service() {
     // --- scan helpers (used by MainActivity) ---
 
     companion object {
+        private const val TAG = "BandConnectorService"
         const val ACTION_SEND_NAV = "com.example.bandmoot.SEND_NAV"
         const val ACTION_CLEAR_NAV = "com.example.bandmoot.CLEAR_NAV"
         const val EXTRA_TURN = "turn"
@@ -207,14 +212,59 @@ class BandConnectorService : Service() {
             .setContentIntent(pi)
             .setOngoing(true)
             .build()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(
-                NOTIF_ID,
-                notif,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE,
-            )
-        } else {
-            startForeground(NOTIF_ID, notif)
+        // Android 14+ validates FGS type against granted permissions at startForeground().
+        // connectedDevice requires FOREGROUND_SERVICE_CONNECTED_DEVICE + BLUETOOTH_CONNECT
+        // (or other BT/NFC perms). KomootListenerService can trigger the service before
+        // MainActivity ever requested BLUETOOTH_CONNECT, so we must not crash — fall
+        // back to a type that doesn't need BT.
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val hasFgsPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                    ContextCompat.checkSelfPermission(
+                        this,
+                        Manifest.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE,
+                    ) == PackageManager.PERMISSION_GRANTED
+                } else true
+                val hasBtPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    ContextCompat.checkSelfPermission(
+                        this,
+                        Manifest.permission.BLUETOOTH_CONNECT,
+                    ) == PackageManager.PERMISSION_GRANTED
+                } else true
+                val useConnectedDevice = hasFgsPermission && hasBtPermission
+                if (useConnectedDevice) {
+                    startForeground(
+                        NOTIF_ID,
+                        notif,
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE,
+                    )
+                } else {
+                    Log.w(TAG, "FGS connectedDevice not granted (fgs=$hasFgsPermission bt=$hasBtPermission), using fallback")
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                        startForeground(
+                            NOTIF_ID,
+                            notif,
+                            ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE,
+                        )
+                    } else {
+                        startForeground(NOTIF_ID, notif)
+                    }
+                }
+            } else {
+                startForeground(NOTIF_ID, notif)
+            }
+        } catch (e: SecurityException) {
+            Log.w(TAG, "startForeground with connectedDevice failed, fallback: ${e.message}")
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                    startForeground(NOTIF_ID, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+                } else {
+                    startForeground(NOTIF_ID, notif)
+                }
+            } catch (e2: Exception) {
+                Log.e(TAG, "fallback startForeground also failed", e2)
+                mgr.notify(NOTIF_ID, notif)
+            }
         }
     }
 
