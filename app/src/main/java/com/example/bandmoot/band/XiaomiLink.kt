@@ -457,7 +457,17 @@ class XiaomiLink(
     private fun sendRaw(bytes: ByteArray, task: String) {
         val g = gatt ?: throw IllegalStateException("no gatt")
         val ch = charWrite ?: throw IllegalStateException("no write char")
-        ch.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+        // 0x0052 exposes write-without-response only: write-with-response gets
+        // ATT status 3 (observed). Pick per characteristic properties so other
+        // firmwares with plain WRITE keep working.
+        val writeType = if (ch.properties and
+            BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE != 0
+        ) {
+            BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+        } else {
+            BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+        }
+        ch.writeType = writeType
         @Suppress("DEPRECATION")
         ch.value = bytes
         // Android allows a single outstanding GATT op: arm the ATT latch first,
@@ -467,7 +477,7 @@ class XiaomiLink(
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             var rc = 0
             for (attempt in 1..3) {
-                rc = g.writeCharacteristic(ch, bytes, WRITE_TYPE_DEFAULT)
+                rc = g.writeCharacteristic(ch, bytes, writeType)
                 if (rc == 0) break
                 log("$task: write rc=$rc, retry $attempt/3")
                 Thread.sleep(300)
@@ -507,7 +517,6 @@ class XiaomiLink(
     companion object {
         private const val TAG = "XiaomiLink"
         val CCCD: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
-        const val WRITE_TYPE_DEFAULT = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
         const val KOMOOT_PACKAGE = "de.komoot.android"
         const val NOTIF_TYPE = 7
         const val CMD_NOTIF_SEND = 0
