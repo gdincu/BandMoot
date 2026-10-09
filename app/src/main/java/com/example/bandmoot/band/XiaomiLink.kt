@@ -55,6 +55,7 @@ class XiaomiLink(
 
     // pending single-write ack / chunked handshake latches
     @Volatile private var ackLatch: CountDownLatch? = null
+    @Volatile private var writeLatch: CountDownLatch? = null // one outstanding GATT write
     @Volatile private var ackResult = -1
     @Volatile private var chunkLatch: CountDownLatch? = null // chunked-start acked
     @Volatile private var chunkEndLatch: CountDownLatch? = null // all chunks acked
@@ -192,7 +193,14 @@ class XiaomiLink(
         }
 
         override fun onServicesDiscovered(g: BluetoothGatt, status: Int) {
-            io.execute { onServicesReady(g) }
+            io.execute {
+                runCatching {
+                    if (status != BluetoothGatt.GATT_SUCCESS) {
+                        throw IllegalStateException("service discovery failed: $status")
+                    }
+                    onServicesReady(g)
+                }.onFailure { fail("setup: ${it.message}") }
+            }
         }
 
         override fun onMtuChanged(g: BluetoothGatt, newMtu: Int, status: Int) {
@@ -216,16 +224,22 @@ class XiaomiLink(
             characteristic: BluetoothGattCharacteristic,
             value: ByteArray,
         ) {
-            io.execute { onIncoming(value) }
+            io.execute {
+                runCatching { onIncoming(value) }.onFailure { fail("incoming: ${it.message}") }
+            }
         }
 
         @Suppress("DEPRECATION")
         override fun onCharacteristicChanged(g: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
-            io.execute { onIncoming(characteristic.value ?: return@execute) }
+            io.execute {
+                runCatching { onIncoming(characteristic.value ?: return@execute) }
+                    .onFailure { fail("incoming: ${it.message}") }
+            }
         }
 
         override fun onCharacteristicWrite(g: BluetoothGatt, c: BluetoothGattCharacteristic, status: Int) {
-            // writes are fire-and-forget at ATT level; protocol acks arrive via notify
+            // ATT-level ack: unblocks sendRaw so only one GATT op is ever in flight.
+            writeLatch?.countDown()
         }
     }
 
@@ -432,13 +446,31 @@ class XiaomiLink(
         ch.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
         @Suppress("DEPRECATION")
         ch.value = bytes
+        // Android allows a single outstanding GATT op: arm the ATT latch first,
+        // then retry busy rejections (rc 201/202) instead of crashing on them.
+        writeLatch = CountDownLatch(1)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            val rc = g.writeCharacteristic(ch, bytes, WRITE_TYPE_DEFAULT)
+            var rc = 0
+            for (attempt in 1..3) {
+                rc = g.writeCharacteristic(ch, bytes, WRITE_TYPE_DEFAULT)
+                if (rc == 0) break
+                log("$task: write rc=$rc, retry $attempt/3")
+                Thread.sleep(300)
+            }
             if (rc != 0) throw IllegalStateException("$task: write rc=$rc")
         } else {
-            @Suppress("DEPRECATION")
-            if (!g.writeCharacteristic(ch)) throw IllegalStateException("$task: write refused")
+            var ok = false
+            for (attempt in 1..3) {
+                @Suppress("DEPRECATION")
+                ok = g.writeCharacteristic(ch)
+                if (ok) break
+                log("$task: write refused, retry $attempt/3")
+                Thread.sleep(300)
+            }
+            if (!ok) throw IllegalStateException("$task: write refused")
         }
+        // Wait for onCharacteristicWrite so the next op never collides with this one.
+        writeLatch?.await(5, TimeUnit.SECONDS)
     }
 
     private fun fail(msg: String) {
