@@ -21,13 +21,16 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install platform + build-tools (compileSdk 34)
+      # NOTE: android-actions/setup-android is intentionally NOT used: v3 requests
+      # the obsolete 'tools' package and fails (sdkmanager exit 1). The runner
+      # image already ships an Android SDK; we just top up what's missing.
+      - name: Install Android platform + build-tools (compileSdk 34)
         run: |
           set -o pipefail
-          sdkmanager "platforms;android-34" "build-tools;34.0.0"
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          ls "$ANDROID_HOME/cmdline-tools"
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-34" "build-tools;34.0.0"
 
       - name: Set up Gradle 8.7 (no wrapper in repo)
         uses: gradle/actions/setup-gradle@v3
