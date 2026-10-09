@@ -90,10 +90,12 @@ class BandConnectorService : Service() {
     }
 
     private fun onNavInstruction(turn: TurnType, title: String, detail: String, distanceM: Long) {
-        // Dedup: Komoot reposts the ongoing notification often; only buzz on change
-        // (mirrors MiBandNotify NotificationService.L/Q cache + distance-change filter).
+        // Dedup: Komoot reposts the ongoing notification ~1/sec with a ticking
+        // countdown ("30 m" -> "25 m"), so key on turn + distance-stripped text +
+        // 50 m distance bucket: one buzz per approach segment instead of per second.
+        // (Mirrors MiBandNotify NotificationService.L/Q cache + distance filter.)
         val now = System.currentTimeMillis()
-        val key = "$turn|$title|$detail"
+        val key = "$turn|${title.withoutDistances()}|${detail.withoutDistances()}|${distanceM / 50}"
         if (key == lastKey && now - lastSentAt < DEDUP_WINDOW_MS) return
         lastKey = key
         lastSentAt = now
@@ -173,6 +175,13 @@ class BandConnectorService : Service() {
         const val CHANNEL_ID = "band_link"
         const val NOTIF_ID = 41
     }
+
+    /** Strips distance tokens ("30 m • ", "0.1 km") so countdown reposts dedup. */
+    private fun String.withoutDistances(): String =
+        replace(
+            Regex("[0-9]+[.,]?[0-9]*\\s*(m|km|mi|ft|yd)\\b\\s*[•·\\-–|]?\\s*", RegexOption.IGNORE_CASE),
+            "",
+        ).trim()
 
     private fun startAsForeground() {
         val mgr = getSystemService(NotificationManager::class.java)

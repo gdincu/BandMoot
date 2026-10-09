@@ -60,8 +60,12 @@ object KomootParser {
             extras.getCharSequence(Notification.EXTRA_SUB_TEXT),
         ).firstOrNull { !it.isNullOrBlank() }?.toString().orEmpty()
         if (title.isBlank() && detail.isBlank()) return null
+        val turn = guessTurn(title, detail)
+        // Stats/status states ("0:05hrs / 0.1 km · ↑ 0 m · ↓ 0 m", "No GPS • ...")
+        // carry no turn: never forward them (the band would buzz on every tick).
+        if (turn == TurnType.BLANK) return null
         return TurnInstruction(
-            turn = guessTurn(title, detail),
+            turn = turn,
             title = title,
             detail = detail,
             distanceMeters = parseDistanceMeters("$title $detail"),
@@ -85,9 +89,13 @@ object KomootParser {
             "slight left" in t || "keep left" in t -> TurnType.KEEP_LEFT
             "slight right" in t || "keep right" in t -> TurnType.KEEP_RIGHT
             "roundabout" in t || "round-about" in t -> TurnType.ROUNDABOUT
-            "left" in t || "l " in " $t" || "↰" in t || "←" in t -> TurnType.LEFT
-            "right" in t || "↱" in t || "→" in t -> TurnType.RIGHT
-            "straight" in t || "continue" in t || "follow" in t || "↑" in t -> TurnType.STRAIGHT
+            // NOTE: no single-symbol matching (arrows like ↑/↓ mean ascent/descent
+            // in Komoot stats text, not direction) and no single-letter matching
+            // ("l " false-positives on words like "total"). Real direction comes
+            // from words; bitmap arrows are a TODO (largeIcon matching).
+            "left" in t -> TurnType.LEFT
+            "right" in t -> TurnType.RIGHT
+            "straight" in t || "continue" in t || "follow" in t || "ahead" in t -> TurnType.STRAIGHT
             "start" in t || "depart" in t || "head" in t -> TurnType.DEPART
             else -> TurnType.BLANK
         }
