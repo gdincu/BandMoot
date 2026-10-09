@@ -56,6 +56,7 @@ class XiaomiLink(
     // pending single-write ack / chunked handshake latches
     @Volatile private var ackLatch: CountDownLatch? = null
     @Volatile private var writeLatch: CountDownLatch? = null // one outstanding GATT write
+    @Volatile private var writeStatus = BluetoothGatt.GATT_SUCCESS // ATT result of last write
     @Volatile private var ackResult = -1
     @Volatile private var chunkLatch: CountDownLatch? = null // chunked-start acked
     @Volatile private var chunkEndLatch: CountDownLatch? = null // all chunks acked
@@ -239,6 +240,7 @@ class XiaomiLink(
 
         override fun onCharacteristicWrite(g: BluetoothGatt, c: BluetoothGattCharacteristic, status: Int) {
             // ATT-level ack: unblocks sendRaw so only one GATT op is ever in flight.
+            writeStatus = status
             writeLatch?.countDown()
         }
     }
@@ -460,6 +462,7 @@ class XiaomiLink(
         ch.value = bytes
         // Android allows a single outstanding GATT op: arm the ATT latch first,
         // then retry busy rejections (rc 201/202) instead of crashing on them.
+        writeStatus = BluetoothGatt.GATT_SUCCESS
         writeLatch = CountDownLatch(1)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             var rc = 0
@@ -482,7 +485,13 @@ class XiaomiLink(
             if (!ok) throw IllegalStateException("$task: write refused")
         }
         // Wait for onCharacteristicWrite so the next op never collides with this one.
+        // The ATT status is decisive: 0 = band accepted the bytes, 3 = write not
+        // permitted, 5 = insufficient authentication (band demands BLE bonding),
+        // 133 = link loss. Anything nonzero means no protocol reply can follow.
         writeLatch?.await(5, TimeUnit.SECONDS)
+        if (writeStatus != BluetoothGatt.GATT_SUCCESS) {
+            throw IllegalStateException("$task: ATT write rejected, status=$writeStatus")
+        }
     }
 
     private fun fail(msg: String) {
