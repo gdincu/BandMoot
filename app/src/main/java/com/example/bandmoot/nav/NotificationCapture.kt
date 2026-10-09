@@ -16,7 +16,7 @@ import java.util.Locale
  *
  * Captures every `de.komoot.android` post (not only navigation ones) — the
  * nav vs non-nav comparison is what reveals the reliable gate
- * (MiBandNotify uses channelId ∋ "navigation" + isOngoing; verify it holds).
+ * (Should use channelId ∋ "navigation" + isOngoing; verify it holds).
  *
  * Files land in `<filesDir>/komoot_captures/<timestamp>.txt` — pull with
  * `adb pull <path>` or read in-app via MainActivity "Show last capture".

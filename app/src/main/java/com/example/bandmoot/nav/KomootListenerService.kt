@@ -9,7 +9,7 @@ import com.example.bandmoot.band.BandConnectorService
 /**
  * Komoot-only listener. Everything else is ignored on purpose (lightweight bike nav).
  *
- * Flow (mirrors MiBandNotify `NotificationService.onNotificationPosted -> p25.run`):
+ * Flow (mirrors `NotificationService.onNotificationPosted -> p25.run`):
  * 1. [KomootParser.isKomootNavigation] gate (de.komoot.android + navigation channel + ongoing)
  * 2. [KomootParser.parse] title/detail/distance
  * 3. forward to [BandConnectorService] for BLE delivery + vibration

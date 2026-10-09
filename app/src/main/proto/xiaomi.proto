@@ -1,3 +1,5 @@
+// Vendored from the Gadgetbridge project (Freeyourgadget/Gadgetbridge,
+// AGPL-3.0-or-later): Xiaomi wire-protocol definition. See NOTICE.md.
 syntax = "proto2"; // we must use proto2 to serialize default values on the wire
 
 package xiaomi;

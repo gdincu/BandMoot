@@ -7,7 +7,6 @@ import android.service.notification.StatusBarNotification
 /**
  * Komoot detection + parsing.
  *
- * Reverse-engineered from MiBandNotify (`com.mc.xiaomi1`):
  * - gate in `defpackage/sq0.java`: package `de.komoot.android`
  *   (`KomootActivity`, `GMapsActivity`/`OSMActivity` siblings stripped for this app)
  * - gate in `defpackage/ni3.java`: SDK 26+, `channelId.contains("navigation")`,
@@ -73,7 +72,7 @@ object KomootParser {
     }
 
     /** Direction bitmap hook; icon matching is a TODO (needs a Context to resolve
-     *  the largeIcon, then downscale to 105x105 like MiBandNotify's dy4.b()). */
+     *  the largeIcon, then downscale to 105x105 like dy4.b()). */
     fun directionBitmap(sbn: StatusBarNotification): android.graphics.Bitmap? {
         // TODO(bike-nav): implement with Icon.loadDrawable(context) + capture mapping.
         return null

@@ -13,9 +13,6 @@ import java.util.UUID
  *   Mi Band 8): service FE95 + chars 0051/0052/0053/0055, AES-CCM handshake in
  *   `XiaomiAuthService` using the 32-hex-char BLE auth key (get key via Mi Fitness
  *   sniff / freemyband-style tool; Gadgetbridge prompts REQUIRE_KEY).
- * - MiBandNotify (`com.mc.xiaomi1`, model id 7013 = 8 Active, `zf2.MI_MIBAND8ACTIVE`):
- *   `bluetooth/BaseService` + `cr`/`fq` stack, auth via `n88` classic path
- *   (`ub1.d == false` for 7013), nav page `tc7("maps")`/`hc7`.
  *
  * Full encrypted-protobuf transport (XiaomiProto.Command, chunking in
  * `XiaomiCharacteristic`, MTU 247/512) is Gadgetbridge AGPL code: do NOT copy it
