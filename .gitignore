@@ -1,0 +1,24 @@
+# Gradle build outputs (incl. protobuf codegen under build/)
+.gradle/
+build/
+**/build/
+
+# Local SDK location (machine-specific, CI installs its own)
+local.properties
+
+# Android Studio / IntelliJ
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# Signing keys — never commit these
+*.jks
+*.keystore
+
+# Local build log (CI uploads its own copy as an artifact)
+gradle.log
+
+# OS noise
+.DS_Store
+Thumbs.db
