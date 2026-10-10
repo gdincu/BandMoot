@@ -8,12 +8,8 @@ import android.bluetooth.BluetoothGattCharacteristic
 import android.bluetooth.BluetoothGattDescriptor
 import android.bluetooth.BluetoothProfile
 import android.content.Context
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.os.Build
 import android.util.Log
-import com.example.bandmoot.R
-import com.google.protobuf.ByteString
 import nodomain.freeyourgadget.gadgetbridge.proto.xiaomi.XiaomiProto
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -32,8 +28,7 @@ import java.util.concurrent.atomic.AtomicReference
  *   notify on, then auth handshake because the set `isEncrypted`)
  * - `XiaomiAuthService` (plaintext auth packets until CMD_AUTH confirms)
  * - `XiaomiNotificationService.onNotification/onDeleteNotification`
- *   (Command type 7, subtypes 0/1), its icon query/request (7/16, 7/15) and
- *   `XiaomiDataUploadService` (type 50 icon upload on characteristic 0x55)
+ *   (Command type 7, subtypes 0/1)
  *
  * Plain Android BluetoothGatt, no Gadgetbridge framework. Single-threaded op
  * queue; every blocking step has a timeout so a stuck band can't hang the service.
@@ -54,12 +49,10 @@ class XiaomiLink(
     private var gatt: BluetoothGatt? = null
     private var mtu = 247
     private var charWrite: BluetoothGattCharacteristic? = null
-    private var charUpload: BluetoothGattCharacteristic? = null // 0x55: icon-upload parts and their acks
     private var keys: XiaomiCrypto.SessionKeys? = null
     private var encIndex = 1 // 0 is reserved for the auth phase (Characteristic.reset)
     @Volatile private var lastSentId: Int? = null
     private var onReadyListener: (() -> Unit)? = null
-    private var pendingIcon: XiaomiNotificationIcon.Upload? = null // waiting for the band's DataUploadAck
 
     // pending single-write ack / chunked handshake latches
     @Volatile private var ackLatch: CountDownLatch? = null
@@ -163,7 +156,7 @@ class XiaomiLink(
                     .build()
                 writeCommand(cmd.toByteArray(), "send nav $id")
                 lastSentId = id
-                log("Nav sent: $title (id=$id, key=${key != null})")
+                log("Nav sent: $title")
             } catch (t: Throwable) {
                 log("sendNav failed: ${t.message}")
             }
@@ -273,10 +266,6 @@ class XiaomiLink(
             value: ByteArray,
         ) {
             signalProtocolAcks(value)
-            if (characteristic.uuid == XiaomiProtocol.CHAR_DATA_UPLOAD) {
-                log("rx 0x55 ${hex(value)}") // upload acks only, never commands
-                return
-            }
             io.execute {
                 runCatching { onIncomingRouted(value) }.onFailure { fail("incoming: ${it.message}") }
             }
@@ -286,10 +275,6 @@ class XiaomiLink(
         override fun onCharacteristicChanged(g: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
             val v = characteristic.value ?: return
             signalProtocolAcks(v)
-            if (characteristic.uuid == XiaomiProtocol.CHAR_DATA_UPLOAD) {
-                log("rx 0x55 ${hex(v)}")
-                return
-            }
             io.execute {
                 runCatching { onIncomingRouted(v) }
                     .onFailure { fail("incoming: ${it.message}") }
@@ -314,12 +299,10 @@ class XiaomiLink(
         val read = svc.getCharacteristic(XiaomiProtocol.CHAR_COMMAND_READ)
         val write = svc.getCharacteristic(XiaomiProtocol.CHAR_COMMAND_WRITE)
         val activity = svc.getCharacteristic(XiaomiProtocol.CHAR_ACTIVITY_DATA)
-        val upload = svc.getCharacteristic(XiaomiProtocol.CHAR_DATA_UPLOAD)
         if (read == null || write == null) {
             fail("51/52 characteristics missing"); return
         }
         charWrite = write
-        charUpload = upload
 
         mtuLatch = CountDownLatch(1)
         g.requestMtu(512)
@@ -329,10 +312,6 @@ class XiaomiLink(
             if (!enableNotify(g, c)) {
                 fail("notify enable failed for ${c.uuid}"); return
             }
-        }
-        // Icon-upload acks come back on 0x55. Optional: a failure only disables icon uploads.
-        if (upload != null && !enableNotify(g, upload)) {
-            log("Icon upload channel: notify failed, notification icons disabled")
         }
         runAuth()
     }
@@ -377,7 +356,6 @@ class XiaomiLink(
             XiaomiFrame.Incoming.ChunkAckStart -> chunkLatch?.countDown()
             XiaomiFrame.Incoming.ChunkAckEnd -> chunkEndLatch?.countDown()
             XiaomiFrame.Incoming.ChunkNack -> {
-                ackResult = CHUNK_NACK
                 chunkEndLatch?.countDown()
                 ackLatch?.countDown()
             }
@@ -479,7 +457,6 @@ class XiaomiLink(
         val cmd = runCatching { XiaomiProto.Command.parseFrom(payload) }.getOrElse {
             log("Unparseable command ${payload.size}B"); return
         }
-        log("rx cmd type=${cmd.type} subtype=${cmd.subtype} ${payload.size}B")
         when (cmd.type) {
             XiaomiCrypto.AUTH_TYPE -> when (cmd.subtype) {
                 XiaomiCrypto.CMD_NONCE -> { // WatchNonce
@@ -508,151 +485,19 @@ class XiaomiLink(
                 }
                 else -> log("Auth subtype ${cmd.subtype} ignored")
             }
-            NOTIF_TYPE -> onNotificationCommand(cmd)
-            DATA_UPLOAD_TYPE -> onDataUploadCommand(cmd)
+            NOTIF_TYPE -> log("Band->phone notification cmd subtype=${cmd.subtype} (ignored)")
             else -> log("Cmd type=${cmd.type} subtype=${cmd.subtype} ignored")
         }
     }
 
-    // ---------- notification icon: the band asks for the Komoot icon, we upload it ----------
-
-    /** Band->phone notification commands: icon query (16) and icon request (15). */
-    private fun onNotificationCommand(cmd: XiaomiProto.Command) {
-        when (cmd.subtype) {
-            CMD_NOTIF_ICON_QUERY -> guardIcon("icon query") {
-                onIconQuery(cmd.notification.notificationIconQuery.getPackage())
-            }
-            CMD_NOTIF_ICON_REQUEST -> {
-                if (cmd.notification.hasNotificationIconRequest()) {
-                    guardIcon("icon request") { onIconRequest(cmd.notification.notificationIconRequest) }
-                }
-            }
-            else -> log("Band->phone notification cmd subtype=${cmd.subtype} (ignored)")
-        }
-    }
-
-    /**
-     * Band asks whether we have an icon for [pkg] (it may send a truncated name). Komoot is the
-     * only app we notify for, so answer for any name that prefixes it, echoing the name as sent.
-     */
-    private fun onIconQuery(pkg: String) {
-        if (pkg.isEmpty() || !KOMOOT_PACKAGE.startsWith(pkg)) {
-            log("Icon query for '$pkg' ignored")
-            return
-        }
-        log("Icon query for $pkg: replying")
-        val reply = XiaomiProto.Command.newBuilder()
-            .setType(NOTIF_TYPE)
-            .setSubtype(CMD_NOTIF_ICON_REQUEST) // phone->band reply reuses subtype 15
-            .setNotification(
-                XiaomiProto.Notification.newBuilder().setNotificationIconReply(
-                    XiaomiProto.NotificationIconPackage.newBuilder().setPackage(pkg),
-                ),
-            )
-            .build()
-        writeCommand(reply.toByteArray(), "icon reply")
-    }
-
-    /** Band wants the icon at [req].size px in [req].pixelFormat: encode it and start the upload. */
-    private fun onIconRequest(req: XiaomiProto.NotificationIconRequest) {
-        if (req.status != 0) {
-            log("Icon request status=${req.status} ignored")
-            return
-        }
-        val upload = komootIcon(req.size, req.pixelFormat)
-        if (upload == null) {
-            log("Cannot encode Komoot icon (size=${req.size}, format=${req.pixelFormat})")
-            return
-        }
-        log("Uploading Komoot icon ${req.size}px, format ${req.pixelFormat}, ${upload.size} B")
-        pendingIcon = upload
-        val cmd = XiaomiProto.Command.newBuilder()
-            .setType(DATA_UPLOAD_TYPE)
-            .setSubtype(CMD_UPLOAD_START)
-            .setDataUpload(
-                XiaomiProto.DataUpload.newBuilder().setDataUploadRequest(
-                    XiaomiProto.DataUploadRequest.newBuilder()
-                        .setType(XiaomiNotificationIcon.TYPE_NOTIFICATION_ICON)
-                        .setMd5Sum(ByteString.copyFrom(upload.md5))
-                        .setSize(upload.size),
-                ),
-            )
-            .build()
-        writeCommand(cmd.toByteArray(), "icon upload request")
-    }
-
-    /** Data-upload service (command type 22): we only expect the DataUploadAck (subtype 0). */
-    private fun onDataUploadCommand(cmd: XiaomiProto.Command) {
-        if (cmd.subtype != CMD_UPLOAD_START || !cmd.dataUpload.hasDataUploadAck()) {
-            log("Data upload cmd subtype=${cmd.subtype} ignored")
-            return
-        }
-        guardIcon("icon upload") { onDataUploadAck(cmd.dataUpload.dataUploadAck) }
-    }
-
-    /** Band accepted the request: send the body as parts on 0x55; the band acks each part. */
-    private fun onDataUploadAck(ack: XiaomiProto.DataUploadAck) {
-        val upload = pendingIcon
-        pendingIcon = null
-        if (upload == null) {
-            log("Data upload ack without a pending icon; ignored")
-            return
-        }
-        if (ack.unknown2 != 0 || ack.resumePosition != 0) {
-            log("Icon upload refused by band (unknown2=${ack.unknown2}, resume=${ack.resumePosition})")
-            return
-        }
-        val chunkSize = if (ack.hasChunkSize()) ack.chunkSize else XiaomiNotificationIcon.DEFAULT_CHUNK_SIZE
-        val parts = XiaomiNotificationIcon.parts(upload.body, chunkSize)
-        parts.forEachIndexed { i, part -> writeDataPart(part, "icon part ${i + 1}/${parts.size}") }
-        log("Notification icon uploaded (${parts.size} parts)")
-    }
-
-    /** The bundled Komoot logo, scaled to [size] px and encoded in [pixelFormat]; null if unsupported. */
-    private fun komootIcon(size: Int, pixelFormat: Int): XiaomiNotificationIcon.Upload? {
-        if (size !in MIN_ICON_PX..MAX_ICON_PX) return null
-        val src = BitmapFactory.decodeResource(context.resources, R.drawable.ic_komoot)
-        val scaled = Bitmap.createScaledBitmap(src, size, size, true)
-        val argb = IntArray(size * size)
-        scaled.getPixels(argb, 0, size, 0, 0, size, size)
-        return XiaomiNotificationIcon.prepare(argb, pixelFormat)
-    }
-
-    /** Icon work must never fail the link: fail() would drop the band connection. */
-    private inline fun guardIcon(task: String, block: () -> Unit) {
-        if (state.get() != State.READY) {
-            log("$task skipped: link not READY")
-            return
-        }
-        try {
-            block()
-        } catch (t: Throwable) {
-            log("$task failed: ${t.message}")
-        }
-    }
-
-    /** Encrypts (once READY) and sends one Command on the command channel, single or chunked. */
+    /** Encrypts (once READY) and sends one Command, single or chunked. */
     private fun writeCommand(plain: ByteArray, task: String) {
-        writeMessage(plain, task, charWrite ?: throw IllegalStateException("no write char"), dataChannel = false)
-    }
-
-    /** One icon-upload part on the data-upload characteristic (0x55). */
-    private fun writeDataPart(part: ByteArray, task: String) {
-        writeMessage(part, task, charUpload ?: throw IllegalStateException("no upload char"), dataChannel = true)
-    }
-
-    /**
-     * One framed, encrypted message on [ch]; blocks until the band acks it.
-     * - command channel: each message takes the next nonce index, which is sent in the frame;
-     * - data-upload channel: always nonce index 0 and no index prefix, as Gadgetbridge's
-     *   XiaomiCharacteristic does with incrementNonce=false.
-     */
-    private fun writeMessage(plain: ByteArray, task: String, ch: BluetoothGattCharacteristic, dataChannel: Boolean) {
+        val g = gatt ?: throw IllegalStateException("no gatt")
+        val ch = charWrite ?: throw IllegalStateException("no write char")
         val ready = state.get() == State.READY
         val sessionKeys = keys
-        val nonce = if (dataChannel) 0 else encIndex
         val bytes = if (ready && sessionKeys != null) {
-            XiaomiCrypto.encrypt(sessionKeys.encryptionKey, sessionKeys.encryptionNonce, nonce, plain)
+            XiaomiCrypto.encrypt(sessionKeys.encryptionKey, sessionKeys.encryptionNonce, encIndex, plain)
         } else {
             plain // auth phase goes out in plaintext framing (Characteristic.sendNext)
         }
@@ -663,10 +508,10 @@ class XiaomiLink(
             val packet = XiaomiFrame.encodeSingle(
                 bytes,
                 encrypted = ready,
-                encIndex = if (ready) nonce else 0,
+                encIndex = if (ready) encIndex else 0,
             )
-            if (ready && !dataChannel) encIndex++
-            sendRaw(packet, task, ch)
+            if (ready) encIndex++
+            sendRaw(packet, task)
             if (ackLatch!!.await(5, TimeUnit.SECONDS).not() || ackResult != 0) {
                 throw IllegalStateException("$task: no ack (result=$ackResult)")
             }
@@ -675,14 +520,14 @@ class XiaomiLink(
         }
         // chunked
         var payload = bytes
-        if (ready && !dataChannel) {
+        val useIndex = ready
+        if (useIndex) {
             payload = XiaomiFrame.prependEncIndex(payload, encIndex)
             encIndex++
         }
         val count = XiaomiFrame.chunkCount(payload.size, maxWrite)
-        ackResult = -1
         chunkLatch = CountDownLatch(1)
-        sendRaw(XiaomiFrame.encodeChunkedStart(count, ready), "$task chunked-start", ch)
+        sendRaw(XiaomiFrame.encodeChunkedStart(count, ready), "$task chunked-start")
         if (!chunkLatch!!.await(5, TimeUnit.SECONDS)) {
             throw IllegalStateException("$task: no chunk-start ack")
         }
@@ -693,12 +538,11 @@ class XiaomiLink(
         for (idx in indices) {
             val from = (idx - 1) * (maxWrite - 2)
             val to = minOf(idx * (maxWrite - 2), payload.size)
-            sendRaw(XiaomiFrame.encodeChunk(idx.toInt(), payload.copyOfRange(from, to)), "$task chunk $idx", ch)
+            sendRaw(XiaomiFrame.encodeChunk(idx.toInt(), payload.copyOfRange(from, to)), "$task chunk $idx")
         }
         if (!chunkEndLatch!!.await(8, TimeUnit.SECONDS)) {
             throw IllegalStateException("$task: no chunk-end ack")
         }
-        if (ackResult == CHUNK_NACK) throw IllegalStateException("$task: band NACKed the chunks")
         log("$task: chunks acked")
     }
 
@@ -709,9 +553,9 @@ class XiaomiLink(
         log("Band reports missing chunks ${indices.toList()} (see resend path)")
     }
 
-    private fun sendRaw(bytes: ByteArray, task: String, target: BluetoothGattCharacteristic? = charWrite) {
+    private fun sendRaw(bytes: ByteArray, task: String) {
         val g = gatt ?: throw IllegalStateException("no gatt")
-        val ch = target ?: throw IllegalStateException("no write char")
+        val ch = charWrite ?: throw IllegalStateException("no write char")
         // 0x0052 exposes write-without-response only: write-with-response gets
         // ATT status 3 (observed). Pick per characteristic properties so other
         // firmwares with plain WRITE keep working.
@@ -759,8 +603,6 @@ class XiaomiLink(
         }
     }
 
-    private fun hex(bytes: ByteArray): String = bytes.joinToString(" ") { "%02x".format(it.toInt() and 0xFF) }
-
     private fun fail(msg: String) {
         Log.w(TAG, msg)
         log(msg)
@@ -779,13 +621,6 @@ class XiaomiLink(
         const val CMD_NOTIF_SEND = 0
         const val CMD_NOTIF_DISMISS = 1
         const val CMD_SCREEN_ON_ON_NOTIFICATIONS_SET = 7
-        const val CMD_NOTIF_ICON_REQUEST = 15 // band->phone request; the phone's reply reuses subtype 15
-        const val CMD_NOTIF_ICON_QUERY = 16
-        const val DATA_UPLOAD_TYPE = 22 // command type of the data-upload service
-        const val CMD_UPLOAD_START = 0 // DataUploadRequest (phone) and DataUploadAck (band)
-        const val CHUNK_NACK = -2 // ackResult sentinel: band NACKed a chunked message
-        const val MIN_ICON_PX = 8
-        const val MAX_ICON_PX = 256
         const val NAV_ID = 1001
     }
 }
