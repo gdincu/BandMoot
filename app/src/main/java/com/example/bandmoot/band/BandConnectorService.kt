@@ -44,6 +44,7 @@ class BandConnectorService : Service() {
     private var link: XiaomiLink? = null
     private var pendingNav: Triple<String, String, Long>? = null
     private var pendingKey: String? = null // notification key for the pending nav (see EXTRA_KEY)
+    private var pendingId: Int = XiaomiLink.NAV_ID // notification id for the pending nav (see EXTRA_ID)
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -76,9 +77,10 @@ class BandConnectorService : Service() {
             link = it
             it.setOnReadyListener {
                 pendingNav?.let { (title, detail, _) ->
-                    it.sendNav(title, detail, key = pendingKey)
+                    it.sendNav(title, detail, id = pendingId, key = pendingKey)
                     pendingNav = null
                     pendingKey = null
+                    pendingId = XiaomiLink.NAV_ID
                 }
             }
             it.connect()
@@ -96,14 +98,22 @@ class BandConnectorService : Service() {
                 val detail = intent.getStringExtra(EXTRA_DETAIL).orEmpty()
                 val distanceM = intent.getLongExtra(EXTRA_DISTANCE_M, -1)
                 val notifKey = intent.getStringExtra(EXTRA_KEY)?.takeIf { it.isNotBlank() }
-                onNavInstruction(turn, title, detail, distanceM, notifKey)
+                val notifId = intent.getIntExtra(EXTRA_ID, XiaomiLink.NAV_ID)
+                onNavInstruction(turn, title, detail, distanceM, notifKey, notifId)
             }
             ACTION_CLEAR_NAV -> onNavCleared()
         }
         return START_STICKY
     }
 
-    private fun onNavInstruction(turn: TurnType, title: String, detail: String, distanceM: Long, notifKey: String? = null) {
+    private fun onNavInstruction(
+        turn: TurnType,
+        title: String,
+        detail: String,
+        distanceM: Long,
+        notifKey: String? = null,
+        notifId: Int = XiaomiLink.NAV_ID,
+    ) {
         // Better timing: NavigatorForMiBand x2/b.java:159 s() — only buzz when
         // turn changes, status appears, distance hits / crosses a threshold, or
         // distance increases (reroute). This replaces the old 50 m bucket + 3 s
@@ -195,12 +205,13 @@ class BandConnectorService : Service() {
 
         val l = link
         if (l?.state() == XiaomiLink.State.READY) {
-            l.sendNav(bandTitle, bandBody, key = notifKey)
+            l.sendNav(bandTitle, bandBody, id = notifId, key = notifKey)
         } else {
             // Band not linked yet (or reconnecting): remember the latest step and
             // flush it in the onReady callback so the first turn isn't lost.
             pendingNav = Triple(bandTitle, bandBody, distanceM)
             pendingKey = notifKey
+            pendingId = notifId
         }
         updateForeground("🧭 $title", detail.ifBlank { turn.name })
     }
@@ -213,6 +224,7 @@ class BandConnectorService : Service() {
         lastDetailStripped = null
         pendingNav = null
         pendingKey = null
+        pendingId = XiaomiLink.NAV_ID
         link?.clearNav()
         updateForeground("BandMoot", "Waiting for Komoot navigation…")
     }
@@ -234,6 +246,7 @@ class BandConnectorService : Service() {
         const val EXTRA_DETAIL = "detail"
         const val EXTRA_DISTANCE_M = "distanceM"
         const val EXTRA_KEY = "key" // optional notification key; test-only, used by adb SEND_NAV runs
+        const val EXTRA_ID = "id" // optional notification id; test-only, default is XiaomiLink.NAV_ID
 
         const val DEDUP_WINDOW_MS = 3000L
         const val STATUS_DEDUP_WINDOW_MS = 8000L

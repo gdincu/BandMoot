@@ -163,7 +163,7 @@ class XiaomiLink(
                     .build()
                 writeCommand(cmd.toByteArray(), "send nav $id")
                 lastSentId = id
-                log("Nav sent: $title (key=${key != null})")
+                log("Nav sent: $title (id=$id, key=${key != null})")
             } catch (t: Throwable) {
                 log("sendNav failed: ${t.message}")
             }
