@@ -60,8 +60,10 @@ object KomootParser {
         ).firstOrNull { !it.isNullOrBlank() }?.toString().orEmpty()
         if (title.isBlank() && detail.isBlank()) return null
         val turn = guessTurn(title, detail)
-        // Stats/status states ("0:05hrs / 0.1 km · ↑ 0 m · ↓ 0 m", "No GPS • ...")
-        // carry no turn: never forward them (the band would buzz on every tick).
+        // Most stats/status states (e.g. "0:05hrs / 0.1 km · ↑ 0 m · ↓ 0 m") carry
+        // no turn: never forward them (would buzz every tick). Two statuses are
+        // user-requested exceptions and are forwarded as NO_GPS / LETS_GO
+        // (like NavigatorForMiBand's rerouting).
         if (turn == TurnType.BLANK) return null
         return TurnInstruction(
             turn = turn,
@@ -81,6 +83,10 @@ object KomootParser {
     private fun guessTurn(title: String, detail: String): TurnType {
         val t = "$title $detail".lowercase()
         return when {
+            // --- Komoot live-nav statuses (like NavigatorForMiBand's "Rerouting...") ---
+            // Must fire even though they carry no distance/turn. Check before BLANK.
+            "no gps" in t -> TurnType.NO_GPS
+            "let's go" in t || "lets go" in t -> TurnType.LETS_GO
             "arriv" in t || "finish" in t || "destination" in t -> TurnType.ARRIVE
             "u-turn" in t || "u turn" in t || "turnaround" in t -> TurnType.UTURN
             "sharp left" in t -> TurnType.SHARP_LEFT

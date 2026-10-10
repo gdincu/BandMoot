@@ -18,6 +18,9 @@ enum class TurnType {
     ROUNDABOUT,
     UTURN,
     FORK,
+    // Komoot live-nav statuses (like NavigatorForMiBand's rerouting) — must notify.
+    NO_GPS,
+    LETS_GO,
 }
 
 /** One parsed Komoot navigation step. */

@@ -35,6 +35,11 @@ class BandConnectorService : Service() {
 
     private var lastKey: String? = null
     private var lastSentAt: Long = 0
+    // Better-timing state (mirrors NavigatorForMiBand x2/b.java:159 s())
+    private var lastTurn: TurnType? = null
+    private var lastDistanceM: Long = -1
+    private var lastTitleStripped: String? = null
+    private var lastDetailStripped: String? = null
     private var link: XiaomiLink? = null
     private var pendingNav: Triple<String, String, Long>? = null
 
@@ -94,17 +99,66 @@ class BandConnectorService : Service() {
     }
 
     private fun onNavInstruction(turn: TurnType, title: String, detail: String, distanceM: Long) {
-        // Dedup: Komoot reposts the ongoing notification ~1/sec with a ticking
-        // countdown ("30 m" -> "25 m"), so key on turn + distance-stripped text +
-        // 50 m distance bucket: one buzz per approach segment instead of per second.
-        // (Mirrors NotificationService.L/Q cache + distance filter.)
+        // Better timing: NavigatorForMiBand x2/b.java:159 s() — only buzz when
+        // turn changes, status appears, distance hits / crosses a threshold, or
+        // distance increases (reroute). This replaces the old 50 m bucket + 3 s
+        // window which still buzzed on every countdown tick between thresholds.
         val now = System.currentTimeMillis()
-        val key = "$turn|${title.withoutDistances()}|${detail.withoutDistances()}|${distanceM / 50}"
-        if (key == lastKey && now - lastSentAt < DEDUP_WINDOW_MS) return
+        val titleStripped = title.withoutDistances()
+        val detailStripped = detail.withoutDistances()
+
+        // Status notifications (No GPS / Let's go!) have no distance and arrive as
+        // `channel_live_navigation` ProgressStyle with TITLE="No GPS …"/"Let's go!".
+        // They must be forwarded (user requested) but throttled to avoid 1/sec spam
+        // while GPS is still missing — use STATUS_DEDUP_WINDOW_MS (Navigator rerouting
+        // always passes, we throttle statuses instead).
+        val isStatus = turn == TurnType.NO_GPS || turn == TurnType.LETS_GO
+        val shouldSend = when {
+            lastTurn == null -> true
+            isStatus -> {
+                if (turn == lastTurn && titleStripped == lastTitleStripped && now - lastSentAt < STATUS_DEDUP_WINDOW_MS) false
+                else true
+            }
+            turn != lastTurn -> true
+            // Same turn, same stripped text: apply distance-threshold gating
+            else -> {
+                if (distanceM == -1L || lastDistanceM == -1L) {
+                    // No parsable distance (e.g. Komoot stats tick): fallback to time window
+                    val key = "$turn|$titleStripped|$detailStripped"
+                    !(key == lastKey && now - lastSentAt < DEDUP_WINDOW_MS)
+                } else {
+                    if (distanceM == lastDistanceM && titleStripped == lastTitleStripped && detailStripped == lastDetailStripped) {
+                        false
+                    } else if (distanceM > lastDistanceM) {
+                        true // moving away / reroute
+                    } else if (titleStripped != lastTitleStripped || detailStripped != lastDetailStripped) {
+                        true // street/text changed (new step) even if between thresholds
+                    } else if (distanceM in DISTANCE_THRESHOLDS_M) {
+                        true // exact threshold hit (x2/b.java m())
+                    } else if (crossedThreshold(lastDistanceM, distanceM)) {
+                        true // crossed a threshold between ticks (x2/b.java w.f())
+                    } else {
+                        // Pure countdown tick between thresholds — suppress
+                        false
+                    }
+                }
+            }
+        }
+        if (!shouldSend) {
+            Log.d(TAG, "Suppressed tick: turn=$turn dist=${distanceM}m last=${lastDistanceM}m")
+            return
+        }
+
+        val key = "$turn|$titleStripped|$detailStripped|$distanceM"
         lastKey = key
+        lastTurn = turn
+        lastDistanceM = distanceM
+        lastTitleStripped = titleStripped
+        lastDetailStripped = detailStripped
         lastSentAt = now
 
-        // Arrow glyph per turn (same idea as dy4 symbols).
+        // Arrow glyph per turn (same idea as dy4 symbols). Large variants for bike glanceability
+        // can be enabled later; these are still single-char but distinct for new statuses.
         val arrow = when (turn) {
             TurnType.LEFT, TurnType.SLIGHT_LEFT -> "← "
             TurnType.RIGHT, TurnType.SLIGHT_RIGHT -> "→ "
@@ -116,6 +170,8 @@ class BandConnectorService : Service() {
             TurnType.KEEP_RIGHT -> "⇒ "
             TurnType.ROUNDABOUT -> "◌ "
             TurnType.ARRIVE -> "⚑ "
+            TurnType.NO_GPS -> "⚠ "
+            TurnType.LETS_GO -> "▶ "
             else -> ""
         }
         val bandTitle = (arrow + title).take(120)
@@ -134,6 +190,10 @@ class BandConnectorService : Service() {
 
     private fun onNavCleared() {
         lastKey = null
+        lastTurn = null
+        lastDistanceM = -1
+        lastTitleStripped = null
+        lastDetailStripped = null
         pendingNav = null
         link?.clearNav()
         updateForeground("BandMoot", "Waiting for Komoot navigation…")
@@ -157,6 +217,10 @@ class BandConnectorService : Service() {
         const val EXTRA_DISTANCE_M = "distanceM"
 
         const val DEDUP_WINDOW_MS = 3000L
+        const val STATUS_DEDUP_WINDOW_MS = 8000L
+        // NavigatorForMiBand defaults: 0,10,20,50,100,200,1000,2000,5000 (d.java:25 +
+        // Configuration.java:48). Bike-tuned: drop 10 m (too noisy), add 500 m.
+        val DISTANCE_THRESHOLDS_M = listOf(0L, 20L, 50L, 100L, 200L, 500L, 1000L, 2000L, 5000L)
         const val PREFS = "bandmoot"
         const val PREF_MAC = "mac"
         const val PREF_AUTH_KEY = "authKey"
@@ -187,6 +251,12 @@ class BandConnectorService : Service() {
             Regex("[0-9]+[.,]?[0-9]*\\s*(m|km|mi|ft|yd)\\b\\s*[•·\\-–|]?\\s*", RegexOption.IGNORE_CASE),
             "",
         ).trim()
+
+    /** NavigatorForMiBand w.java:66 f() — crossed a configured threshold between ticks. */
+    private fun crossedThreshold(prev: Long, cur: Long): Boolean {
+        if (prev <= cur) return false
+        return DISTANCE_THRESHOLDS_M.any { it in (cur + 1) until prev }
+    }
 
     private fun startAsForeground() {
         val mgr = getSystemService(NotificationManager::class.java)
