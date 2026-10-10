@@ -163,7 +163,7 @@ class XiaomiLink(
                     .build()
                 writeCommand(cmd.toByteArray(), "send nav $id")
                 lastSentId = id
-                log("Nav sent: $title")
+                log("Nav sent: $title (key=${key != null})")
             } catch (t: Throwable) {
                 log("sendNav failed: ${t.message}")
             }
@@ -273,7 +273,10 @@ class XiaomiLink(
             value: ByteArray,
         ) {
             signalProtocolAcks(value)
-            if (characteristic.uuid == XiaomiProtocol.CHAR_DATA_UPLOAD) return // 0x55 carries only upload acks
+            if (characteristic.uuid == XiaomiProtocol.CHAR_DATA_UPLOAD) {
+                log("rx 0x55 ${hex(value)}") // upload acks only, never commands
+                return
+            }
             io.execute {
                 runCatching { onIncomingRouted(value) }.onFailure { fail("incoming: ${it.message}") }
             }
@@ -283,7 +286,10 @@ class XiaomiLink(
         override fun onCharacteristicChanged(g: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
             val v = characteristic.value ?: return
             signalProtocolAcks(v)
-            if (characteristic.uuid == XiaomiProtocol.CHAR_DATA_UPLOAD) return
+            if (characteristic.uuid == XiaomiProtocol.CHAR_DATA_UPLOAD) {
+                log("rx 0x55 ${hex(v)}")
+                return
+            }
             io.execute {
                 runCatching { onIncomingRouted(v) }
                     .onFailure { fail("incoming: ${it.message}") }
@@ -473,6 +479,7 @@ class XiaomiLink(
         val cmd = runCatching { XiaomiProto.Command.parseFrom(payload) }.getOrElse {
             log("Unparseable command ${payload.size}B"); return
         }
+        log("rx cmd type=${cmd.type} subtype=${cmd.subtype} ${payload.size}B")
         when (cmd.type) {
             XiaomiCrypto.AUTH_TYPE -> when (cmd.subtype) {
                 XiaomiCrypto.CMD_NONCE -> { // WatchNonce
@@ -751,6 +758,8 @@ class XiaomiLink(
             throw IllegalStateException("$task: ATT write rejected, status=$writeStatus")
         }
     }
+
+    private fun hex(bytes: ByteArray): String = bytes.joinToString(" ") { "%02x".format(it.toInt() and 0xFF) }
 
     private fun fail(msg: String) {
         Log.w(TAG, msg)
