@@ -4,6 +4,7 @@ import android.content.Intent
 import android.os.Build
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
+import android.util.Log
 import com.example.bandmoot.band.BandConnectorService
 
 /**
@@ -18,18 +19,27 @@ import com.example.bandmoot.band.BandConnectorService
  */
 class KomootListenerService : NotificationListenerService() {
 
+    private var activeNavigationKey: String? = null
+
     override fun onNotificationPosted(sbn: StatusBarNotification) {
         if (sbn.packageName != KomootParser.KOMOOT_PACKAGE) return
         // Step-2 capture: record EVERY Komoot post (nav or not) for parser tuning.
         runCatching { NotificationCapture.capture(this, sbn) }
         if (!KomootParser.isKomootNavigation(sbn)) return
+        activeNavigationKey = sbn.key
         val instruction = KomootParser.parse(sbn) ?: return
         forward(instruction, remove = false)
     }
 
     override fun onNotificationRemoved(sbn: StatusBarNotification) {
         if (sbn.packageName != KomootParser.KOMOOT_PACKAGE) return
+        if (sbn.key != activeNavigationKey) {
+            Log.d(TAG, "Ignoring removed non-active Komoot notification key=${sbn.key}")
+            return
+        }
+        activeNavigationKey = null
         // Komoot dismisses the nav notification at arrival: clear the band screen.
+        Log.i(TAG, "Active Komoot navigation notification removed; clearing band")
         forward(null, remove = true)
     }
 
@@ -68,6 +78,7 @@ class KomootListenerService : NotificationListenerService() {
     }
 
     companion object {
+        private const val TAG = "KomootListenerService"
         const val ACTION_LISTENER_STATE = "com.example.bandmoot.LISTENER_STATE"
         const val EXTRA_CONNECTED = "connected"
     }
