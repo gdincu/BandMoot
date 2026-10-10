@@ -176,6 +176,22 @@ class XiaomiLink(
         }
     }
 
+    /**
+     * Band-side "screen on on notifications" setting (Gadgetbridge
+     * PREF_SCREEN_ON_ON_NOTIFICATIONS): wakes the band screen whenever a
+     * notification arrives. Unsupported firmware just NACKs, caller tolerates it.
+     */
+    private fun setScreenOnOnNotifications(enabled: Boolean) {
+        val cmd = XiaomiProto.Command.newBuilder()
+            .setType(NOTIF_TYPE)
+            .setSubtype(CMD_SCREEN_ON_ON_NOTIFICATIONS_SET)
+            .setNotification(
+                XiaomiProto.Notification.newBuilder().setScreenOnOnNotifications(enabled),
+            )
+            .build()
+        writeCommand(cmd.toByteArray(), "screen-on-on-notifications=$enabled")
+    }
+
     private fun sendNavDismiss(id: Int) {
         if (state.get() != State.READY) {
             throw IllegalStateException("link not READY (${state.get()})")
@@ -460,6 +476,11 @@ class XiaomiLink(
                     authReplyLatch?.countDown()
                     state.set(State.READY)
                     log("Authenticated. Link READY.")
+                    // Wake the band screen whenever a notification (nav card) arrives.
+                    // Band-side persistent setting, as in Gadgetbridge's
+                    // PREF_SCREEN_ON_ON_NOTIFICATIONS; must not kill the link if it fails.
+                    runCatching { setScreenOnOnNotifications(true) }
+                        .onFailure { log("screen-on-on-notifications failed: ${it.message}") }
                     onReadyListener?.invoke()
                 }
                 else -> log("Auth subtype ${cmd.subtype} ignored")
@@ -599,6 +620,7 @@ class XiaomiLink(
         const val NOTIF_TYPE = 7
         const val CMD_NOTIF_SEND = 0
         const val CMD_NOTIF_DISMISS = 1
+        const val CMD_SCREEN_ON_ON_NOTIFICATIONS_SET = 7
         const val NAV_ID = 1001
     }
 }
