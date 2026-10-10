@@ -233,7 +233,7 @@ class BandConnectorService : Service() {
         // NavigatorForMiBand defaults: 0,10,20,50,100,200,1000,2000,5000 (d.java:25 +
         // Configuration.java:48). Bike-tuned: drop 10 m (too noisy), add 500 m.
         val DISTANCE_THRESHOLDS_M = listOf(0L, 20L, 50L, 100L, 200L, 500L, 1000L, 2000L, 5000L)
-        private val STREET_TRIM_CHARS = charArrayOf(' ', '•', '·', '-', '–', '|', ",")
+        private val STREET_TRIM_CHARS = charArrayOf(' ', '•', '·', '-', '–', '|', ',')
         const val PREFS = "bandmoot"
         const val PREF_MAC = "mac"
         const val PREF_AUTH_KEY = "authKey"
