@@ -12,7 +12,10 @@ stack (call flow, framing and crypto; no Gadgetbridge framework code):
 - `band/XiaomiFrame.kt` — packet framing/chunking, from
   `XiaomiCharacteristic` (single/chunked writes, ACK scheme, reassembly).
 - `band/XiaomiLink.kt` — link lifecycle, from `XiaomiBleSupport`
-  (MTU request, notify enable, auth-then-encrypted-notify flow).
+  (MTU request, notify enable, auth-then-encrypted-notify flow) and the
+  notification icon query/request handling of `XiaomiNotificationService`.
+- `band/XiaomiNotificationIcon.kt` — notification icon upload (pixel formats,
+  upload body and parts), from `XiaomiBitmapUtils` and `XiaomiDataUploadService`.
 - `app/src/main/proto/xiaomi.proto` — vendored from Gadgetbridge
   (`nodomain.freeyourgadget.gadgetbridge.proto.xiaomi`, `XiaomiProto`).
 
