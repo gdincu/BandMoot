@@ -51,6 +51,7 @@ class XiaomiLink(
     private var charWrite: BluetoothGattCharacteristic? = null
     private var keys: XiaomiCrypto.SessionKeys? = null
     private var encIndex = 1 // 0 is reserved for the auth phase (Characteristic.reset)
+    @Volatile private var lastSentId: Int? = null
     private var onReadyListener: (() -> Unit)? = null
 
     // pending single-write ack / chunked handshake latches
@@ -114,7 +115,15 @@ class XiaomiLink(
         }
     }
 
-    /** Sends/updates the ongoing nav notification. Safe to call before READY (drops + logs). */
+    /**
+     * Sends/updates the ongoing nav notification. Safe to call before READY (drops + logs).
+     *
+     * Re-sending the same [id] updates the card in place. We deliberately do NOT
+     * dismiss before sending (Gadgetbridge's XiaomiNotificationService only dismisses
+     * when the phone-side notification is removed): the dismiss raced the re-add, and
+     * same-id re-adds right after a dismiss were ignored by the band, so the card was
+     * never visible.
+     */
     fun sendNav(title: String, body: String, id: Int = NAV_ID, key: String? = null) {
         io.execute {
             if (state.get() != State.READY) {
@@ -122,21 +131,6 @@ class XiaomiLink(
                 return@execute
             }
             try {
-                // Some firmware won't buzz/show an update while the previous nav
-                // notification is still active. Dismiss it, leave a short gap, then
-                // send the replacement. Keep this sequence on the BLE queue so a
-                // later send can't interleave between the dismiss and replacement.
-                try {
-                    sendNavDismiss(id)
-                } catch (t: Throwable) {
-                    log("clear before send failed: ${t.message}")
-                }
-                Thread.sleep(NAV_REPLACE_DELAY_MS)
-                if (state.get() != State.READY) {
-                    log("sendNav aborted after clear: link not READY (${state.get()})")
-                    return@execute
-                }
-
                 val ts = SimpleDateFormat("yyyyMMdd'T'HHmmss", Locale.ROOT).format(Date())
                 val n3 = XiaomiProto.Notification3.newBuilder()
                     .setId(id)
@@ -161,6 +155,7 @@ class XiaomiLink(
                     )
                     .build()
                 writeCommand(cmd.toByteArray(), "send nav $id")
+                lastSentId = id
                 log("Nav sent: $title")
             } catch (t: Throwable) {
                 log("sendNav failed: ${t.message}")
@@ -168,11 +163,13 @@ class XiaomiLink(
         }
     }
 
-    fun clearNav(id: Int = NAV_ID) {
+    /** Dismisses the last card actually sent (or [id], if given). */
+    fun clearNav(id: Int = lastSentId ?: NAV_ID) {
         io.execute {
             if (state.get() != State.READY) return@execute
             try {
                 sendNavDismiss(id)
+                if (id == lastSentId) lastSentId = null
             } catch (t: Throwable) {
                 log("clearNav failed: ${t.message}")
             }
@@ -603,7 +600,6 @@ class XiaomiLink(
         const val CMD_NOTIF_SEND = 0
         const val CMD_NOTIF_DISMISS = 1
         const val NAV_ID = 1001
-        private const val NAV_REPLACE_DELAY_MS = 150L
     }
 }
 
