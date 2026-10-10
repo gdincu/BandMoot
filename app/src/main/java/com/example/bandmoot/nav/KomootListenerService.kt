@@ -23,8 +23,6 @@ class KomootListenerService : NotificationListenerService() {
 
     override fun onNotificationPosted(sbn: StatusBarNotification) {
         if (sbn.packageName != KomootParser.KOMOOT_PACKAGE) return
-        // Step-2 capture: record EVERY Komoot post (nav or not) for parser tuning.
-        runCatching { NotificationCapture.capture(this, sbn) }
         if (!KomootParser.isKomootNavigation(sbn)) return
         activeNavigationKey = sbn.key
         val instruction = KomootParser.parse(sbn) ?: return

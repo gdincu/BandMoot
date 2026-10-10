@@ -6,8 +6,8 @@ forwards each turn over the band's encrypted BLE protocol.
 
 ## How it works
 
-1. `KomootListenerService` (notification listener, Komoot only) captures every
-   `de.komoot.android` post to `filesDir/komoot_captures/` for parser tuning.
+1. `KomootListenerService` (notification listener, Komoot only) receives every
+   `de.komoot.android` post and passes navigation posts on.
 2. `KomootParser` accepts live-navigation posts (`channel_live_navigation`,
    ongoing) and extracts turn / title / detail / distance. Stats and status
    states (recording timer, "No GPS") are ignored, not forwarded.
@@ -24,8 +24,7 @@ forwards each turn over the band's encrypted BLE protocol.
 4. Start the link service.
 5. In Komoot, during navigation: speaker icon → **Notifications** mode, and
    allow the `Navigation instructions` channel + Live updates in Android
-   settings. Verify a turn card appears in the shade; the app's
-   "Show last Komoot capture" shows what the parser saw.
+   settings. Verify a turn card appears in the shade.
 
 ## Status
 

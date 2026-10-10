@@ -18,7 +18,6 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import com.example.bandmoot.band.BandConnectorService
 import com.example.bandmoot.band.XiaomiProtocol
-import com.example.bandmoot.nav.NotificationCapture
 
 /**
  * Single-screen setup: notification access -> BLE scan (8 Active only) -> auth key ->
@@ -88,29 +87,12 @@ class MainActivity : AppCompatActivity() {
                 log("Link service started. Start a Komoot ride.")
             }
         }
-        val captureView = TextView(this).apply {
-            text = "No Komoot capture yet."
-            setTextIsSelectable(true)
-        }
-        val btnCapture = Button(this).apply {
-            text = "Show last Komoot capture"
-            setOnClickListener {
-                val file = NotificationCapture.lastCapture(this@MainActivity)
-                if (file == null) {
-                    toast("Nothing captured yet — start a Komoot ride first")
-                    return@setOnClickListener
-                }
-                captureView.text = "${file.absolutePath}\n\n${file.readText().take(4000)}"
-            }
-        }
         layout.addView(status)
         layout.addView(btnListener)
         layout.addView(btnScan)
         layout.addView(authKeyInput)
         layout.addView(btnSaveKey)
         layout.addView(btnStart)
-        layout.addView(btnCapture)
-        layout.addView(captureView)
         setContentView(ScrollView(this).apply { addView(layout) })
 
         // MAC seen in your Mi Fitness log (04:DA:28:1C:36:32): prefill once so the
