@@ -20,6 +20,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.example.bandmoot.MainActivity
 import com.example.bandmoot.nav.TurnType
+import java.util.Locale
 
 /**
  * Foreground service owning the BLE link to the single paired 8 Active.
@@ -174,8 +175,19 @@ class BandConnectorService : Service() {
             TurnType.LETS_GO -> "▶ "
             else -> ""
         }
-        val bandTitle = (arrow + title).take(120)
-        val bandBody = detail.take(512)
+        // Band layout (tested on the 8 Active): title row = arrow + distance
+        // ("← 31m"), body = street name ("Aleea Constantin Brancusi").
+        // Statuses (No GPS / Let's go) have no distance: keep their text in the title.
+        val distanceLabel = formatDistanceLabel(distanceM)
+        val bandTitle: String
+        val bandBody: String
+        if (isStatus || distanceLabel == null) {
+            bandTitle = (arrow + title).take(120)
+            bandBody = detail.take(512)
+        } else {
+            bandTitle = (arrow + distanceLabel).take(120)
+            bandBody = streetLabel(detail, title).take(512)
+        }
 
         val l = link
         if (l?.state() == XiaomiLink.State.READY) {
@@ -221,6 +233,7 @@ class BandConnectorService : Service() {
         // NavigatorForMiBand defaults: 0,10,20,50,100,200,1000,2000,5000 (d.java:25 +
         // Configuration.java:48). Bike-tuned: drop 10 m (too noisy), add 500 m.
         val DISTANCE_THRESHOLDS_M = listOf(0L, 20L, 50L, 100L, 200L, 500L, 1000L, 2000L, 5000L)
+        private val STREET_TRIM_CHARS = charArrayOf(' ', '•', '·', '-', '–', '|', ",")
         const val PREFS = "bandmoot"
         const val PREF_MAC = "mac"
         const val PREF_AUTH_KEY = "authKey"
@@ -243,6 +256,21 @@ class BandConnectorService : Service() {
 
         const val CHANNEL_ID = "band_link"
         const val NOTIF_ID = 41
+    }
+
+    /** "31m" under 1 km, "1.2km" above; null when Komoot gave no distance. */
+    private fun formatDistanceLabel(distanceM: Long): String? = when {
+        distanceM < 0 -> null
+        distanceM < 1000 -> "${distanceM}m"
+        else -> "%.1f".format(Locale.ROOT, distanceM / 1000.0).removeSuffix(".0") + "km"
+    }
+
+    /** Komoot carries the street on both lines ("… onto High St" / "250 m - High St");
+     *  prefer the distance-stripped detail, fall back to the stripped title. */
+    private fun streetLabel(detail: String, title: String): String {
+        val fromDetail = detail.withoutDistances().trim(*STREET_TRIM_CHARS)
+        if (fromDetail.isNotEmpty()) return fromDetail
+        return title.withoutDistances().trim(*STREET_TRIM_CHARS)
     }
 
     /** Strips distance tokens ("30 m • ", "0.1 km") so countdown reposts dedup. */
