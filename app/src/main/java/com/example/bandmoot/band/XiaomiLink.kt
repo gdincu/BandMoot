@@ -122,6 +122,21 @@ class XiaomiLink(
                 return@execute
             }
             try {
+                // Some firmware won't buzz/show an update while the previous nav
+                // notification is still active. Dismiss it, leave a short gap, then
+                // send the replacement. Keep this sequence on the BLE queue so a
+                // later send can't interleave between the dismiss and replacement.
+                try {
+                    sendNavDismiss(id)
+                } catch (t: Throwable) {
+                    log("clear before send failed: ${t.message}")
+                }
+                Thread.sleep(NAV_REPLACE_DELAY_MS)
+                if (state.get() != State.READY) {
+                    log("sendNav aborted after clear: link not READY (${state.get()})")
+                    return@execute
+                }
+
                 val ts = SimpleDateFormat("yyyyMMdd'T'HHmmss", Locale.ROOT).format(Date())
                 val n3 = XiaomiProto.Notification3.newBuilder()
                     .setId(id)
@@ -157,26 +172,33 @@ class XiaomiLink(
         io.execute {
             if (state.get() != State.READY) return@execute
             try {
-                val cmd = XiaomiProto.Command.newBuilder()
-                    .setType(NOTIF_TYPE)
-                    .setSubtype(CMD_NOTIF_DISMISS)
-                    .setNotification(
-                        XiaomiProto.Notification.newBuilder()
-                            .setNotificationDismiss(
-                                XiaomiProto.NotificationDismiss.newBuilder()
-                                    .addNotificationId(
-                                        XiaomiProto.NotificationId.newBuilder()
-                                            .setId(id)
-                                            .setPackage(KOMOOT_PACKAGE),
-                                    ),
-                            ),
-                    )
-                    .build()
-                writeCommand(cmd.toByteArray(), "clear nav $id")
+                sendNavDismiss(id)
             } catch (t: Throwable) {
                 log("clearNav failed: ${t.message}")
             }
         }
+    }
+
+    private fun sendNavDismiss(id: Int) {
+        if (state.get() != State.READY) {
+            throw IllegalStateException("link not READY (${state.get()})")
+        }
+        val cmd = XiaomiProto.Command.newBuilder()
+            .setType(NOTIF_TYPE)
+            .setSubtype(CMD_NOTIF_DISMISS)
+            .setNotification(
+                XiaomiProto.Notification.newBuilder()
+                    .setNotificationDismiss(
+                        XiaomiProto.NotificationDismiss.newBuilder()
+                            .addNotificationId(
+                                XiaomiProto.NotificationId.newBuilder()
+                                    .setId(id)
+                                    .setPackage(KOMOOT_PACKAGE),
+                            ),
+                    ),
+            )
+            .build()
+        writeCommand(cmd.toByteArray(), "clear nav $id")
     }
 
     // ---------- internals ----------
@@ -581,6 +603,7 @@ class XiaomiLink(
         const val CMD_NOTIF_SEND = 0
         const val CMD_NOTIF_DISMISS = 1
         const val NAV_ID = 1001
+        private const val NAV_REPLACE_DELAY_MS = 150L
     }
 }
 
