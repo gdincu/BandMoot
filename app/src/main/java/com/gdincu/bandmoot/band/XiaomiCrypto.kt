@@ -1,4 +1,4 @@
-package com.example.bandmoot.band
+package com.gdincu.bandmoot.band
 
 import android.os.Build
 import nodomain.freeyourgadget.gadgetbridge.proto.xiaomi.XiaomiProto
@@ -14,25 +14,13 @@ import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
 
 /**
- * Xiaomi encrypted-handshake crypto, ported from Gadgetbridge (AGPL-3.0-or-later):
- * - `service/devices/xiaomi/XiaomiAuthService.java`
- *   (computeAuthStep3Hmac, hmacSHA256, encrypt/decrypt, buildNonceCommand,
- *   handleWatchNonce/AuthDeviceInfo)
+ * Xiaomi encrypted-handshake crypto (ported from Gadgetbridge, AGPL-3.0-or-later).
  *
- * Key schedule (all from the 16-byte BLE auth key, hex in app prefs):
- * 1. phone sends random 16-byte phoneNonce: Command{type:1, subtype:26}
- * 2. band replies WatchNonce{nonce, hmac}: Command{type:1, subtype:26}
- * 3. HKDF-ish ("miwear-auth", key = HMAC(phoneNonce||watchNonce, secretKey))
- *    -> 64 bytes = decryptionKey[16] | encryptionKey[16] |
- *                   decryptionNonce[4] | encryptionNonce[4]
- * 4. verify HMAC-SHA256(decryptionKey, watchNonce||phoneNonce) == watch hmac
- * 5. reply AuthStep3{hmac(encryptionKey, phoneNonce||watchNonce),
- *    AES-CCM-32(AuthDeviceInfo)}: Command{type:1, subtype:27}
- * 6. band confirms: Command{type:1, subtype:27} -> link is INITIALIZED.
- *
- * Session crypto afterwards: AES-CCM with 32-bit tag,
- * nonce12 = nonce4 || 0x00000000 || indexLE (index 0 reserved for auth,
- * first session index is 1; see XiaomiFrame / XiaomiCharacteristic.reset()).
+ * 1. phone sends random phoneNonce, band replies WatchNonce{nonce, hmac}
+ * 2. HKDF-ish ("miwear-auth") derives decryptionKey | encryptionKey |
+ *    decryptionNonce | encryptionNonce from the 16-byte BLE auth key
+ * 3. verify HMAC, reply AuthStep3, band confirms -> link ready
+ * Session crypto: AES-CCM with 32-bit tag, index 0 reserved for auth.
  */
 object XiaomiCrypto {
 
@@ -52,7 +40,7 @@ object XiaomiCrypto {
 
     fun hexToSecretKey(authKeyHex: String): ByteArray {
         val clean = authKeyHex.trim().removePrefix("0x").removePrefix("0X")
-        require(clean.length >= 32 && clean.all { it in '0'..'9' || it in 'a'..'f' || it in 'A'..'F' }) {
+        require(clean.length == 32 && clean.all { it in '0'..'9' || it in 'a'..'f' || it in 'A'..'F' }) {
             "Auth key must be 32 hex chars"
         }
         val out = ByteArray(16)
@@ -77,8 +65,7 @@ object XiaomiCrypto {
 
     /**
      * Verifies the band's WatchNonce and derives session keys.
-     * @return keys + step-3 reply command, or null when the band HMAC mismatches
-     * (wrong auth key -> caller must abort, like Gadgetbridge's disconnect).
+     * @return keys + step-3 reply, or null on HMAC mismatch (wrong auth key).
      */
     fun handleWatchNonce(
         secretKey: ByteArray,
@@ -124,7 +111,7 @@ object XiaomiCrypto {
         return keys to reply
     }
 
-    /** HKDF-like expansion from Gadgetbridge computeAuthStep3Hmac (64 bytes out). */
+    /** HKDF-like expansion (64 bytes out). */
     fun computeAuthStep3Hmac(secretKey: ByteArray, phoneNonce: ByteArray, watchNonce: ByteArray): ByteArray {
         val label = "miwear-auth".toByteArray()
         val mac = Mac.getInstance("HmacSHA256")
@@ -163,7 +150,7 @@ object XiaomiCrypto {
             .putInt(index)
             .array()
 
-    /** AES-CCM encrypt with 32-bit tag (matches Gadgetbridge encrypt()). */
+    /** AES-CCM encrypt with 32-bit tag. */
     fun encrypt(key: ByteArray, nonce4: ByteArray, index: Int, payload: ByteArray): ByteArray {
         val cipher = newCcm(true, key, 32, nonce12(nonce4, index))
         val out = ByteArray(cipher.getOutputSize(payload.size))
@@ -172,7 +159,7 @@ object XiaomiCrypto {
         return out
     }
 
-    /** AES-CCM decrypt with 32-bit tag (matches Gadgetbridge decrypt()). */
+    /** AES-CCM decrypt with 32-bit tag. */
     fun decrypt(key: ByteArray, nonce4: ByteArray, index: Int, payload: ByteArray): ByteArray {
         val cipher = newCcm(false, key, 32, nonce12(nonce4, index))
         val out = ByteArray(cipher.getOutputSize(payload.size))
@@ -183,7 +170,6 @@ object XiaomiCrypto {
 
     private fun newCcm(forEncrypt: Boolean, key: ByteArray, macBits: Int, nonce: ByteArray): CCMBlockCipher {
         val engine = AESEngine()
-        engine.init(forEncrypt, KeyParameter(key))
         return CCMBlockCipher(engine).also {
             it.init(forEncrypt, AEADParameters(KeyParameter(key), macBits, nonce, null))
         }

@@ -1,41 +1,15 @@
-package com.example.bandmoot.nav
+package com.gdincu.bandmoot.nav
 
 import android.app.Notification
-import android.os.Build
 import android.service.notification.StatusBarNotification
 
-/**
- * Komoot detection + parsing.
- *
- * - gate in `defpackage/sq0.java`: package `de.komoot.android`
- *   (`KomootActivity`, `GMapsActivity`/`OSMActivity` siblings stripped for this app)
- * - gate in `defpackage/ni3.java`: SDK 26+, `channelId.contains("navigation")`,
- *   `notification.isOngoing == true`
- * - fields in `ni3.f`: `EXTRA_TITLE`, `EXTRA_SUMMARY_TEXT`, `EXTRA_BIG_TEXT`/`EXTRA_TEXT`,
- *   + `notification.largeIcon` tint-filtered for
- *   `#4F850D`, resized to 105x105 and matched against Komoot drawables
- *   (`defpackage/dy4.java` 42-value turn enum, `vy2` similarity).
- *
- * Observed live shape (Komoot 2026.40.x, `channel_live_navigation`,
- * `category=navigation`, `ProgressStyle` Live Update):
- * - title = status or turn text ("No GPS • Ensure you have a clear view of the sky")
- * - `android.shortCriticalText` (literal key: no SDK constant exists for it
- *   yet, but Komoot posts it) = short status/turn text ("No GPS")
- * - turn arrow arrives as `largeIcon` bitmap (icon matching = TODO)
- * - `progressSegments` Bundle + one action button (contents TBD from a
- *   real-turn capture)
- *
- * TODO(bike-nav): capture a real approaching-turn notification (with GPS) and
- * tighten [from]/[matchIcon]; start with text-only forwarding so turns are
- * readable even before icon mapping exists.
- */
+/** Komoot live-navigation detection + parsing. */
 object KomootParser {
 
     const val KOMOOT_PACKAGE = "de.komoot.android"
 
     fun isKomootNavigation(sbn: StatusBarNotification): Boolean {
         if (sbn.packageName != KOMOOT_PACKAGE) return false
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return false
         val notif = sbn.notification ?: return false
         if (!sbn.isOngoing) return false
         val channelId = notif.channelId ?: return false
@@ -47,9 +21,6 @@ object KomootParser {
         val extras = notif.extras ?: return null
         val title = sequenceOf(
             extras.getCharSequence(Notification.EXTRA_TITLE),
-            // Literal key: Komoot posts live-nav text under
-            // "android.shortCriticalText" but no Notification.EXTRA_* constant
-            // exists for it in the compile SDK, so reference it by string.
             extras.getCharSequence("android.shortCriticalText"),
             extras.getCharSequence(Notification.EXTRA_SUMMARY_TEXT),
         ).firstOrNull { !it.isNullOrBlank() }?.toString().orEmpty()
@@ -60,10 +31,6 @@ object KomootParser {
         ).firstOrNull { !it.isNullOrBlank() }?.toString().orEmpty()
         if (title.isBlank() && detail.isBlank()) return null
         val turn = guessTurn(title, detail)
-        // Most stats/status states (e.g. "0:05hrs / 0.1 km · ↑ 0 m · ↓ 0 m") carry
-        // no turn: never forward them (would buzz every tick). Two statuses are
-        // user-requested exceptions and are forwarded as NO_GPS / LETS_GO
-        // (like NavigatorForMiBand's rerouting).
         if (turn == TurnType.BLANK) return null
         return TurnInstruction(
             turn = turn,
@@ -73,18 +40,9 @@ object KomootParser {
         )
     }
 
-    /** Direction bitmap hook; icon matching is a TODO (needs a Context to resolve
-     *  the largeIcon, then downscale to 105x105 like dy4.b()). */
-    fun directionBitmap(sbn: StatusBarNotification): android.graphics.Bitmap? {
-        // TODO(bike-nav): implement with Icon.loadDrawable(context) + capture mapping.
-        return null
-    }
-
     private fun guessTurn(title: String, detail: String): TurnType {
         val t = "$title $detail".lowercase()
         return when {
-            // --- Komoot live-nav statuses (like NavigatorForMiBand's "Rerouting...") ---
-            // Must fire even though they carry no distance/turn. Check before BLANK.
             "no gps" in t -> TurnType.NO_GPS
             "let's go" in t || "lets go" in t -> TurnType.LETS_GO
             "arriv" in t || "finish" in t || "destination" in t -> TurnType.ARRIVE
@@ -94,10 +52,6 @@ object KomootParser {
             "slight left" in t || "keep left" in t -> TurnType.KEEP_LEFT
             "slight right" in t || "keep right" in t -> TurnType.KEEP_RIGHT
             "roundabout" in t || "round-about" in t -> TurnType.ROUNDABOUT
-            // NOTE: no single-symbol matching (arrows like ↑/↓ mean ascent/descent
-            // in Komoot stats text, not direction) and no single-letter matching
-            // ("l " false-positives on words like "total"). Real direction comes
-            // from words; bitmap arrows are a TODO (largeIcon matching).
             "left" in t -> TurnType.LEFT
             "right" in t -> TurnType.RIGHT
             "straight" in t || "continue" in t || "follow" in t || "ahead" in t -> TurnType.STRAIGHT

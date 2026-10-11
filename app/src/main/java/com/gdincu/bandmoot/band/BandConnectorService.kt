@@ -1,4 +1,4 @@
-package com.example.bandmoot.band
+package com.gdincu.bandmoot.band
 
 import android.Manifest
 import android.app.Notification
@@ -15,34 +15,25 @@ import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import android.os.ParcelUuid
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
-import com.example.bandmoot.MainActivity
-import com.example.bandmoot.nav.TurnType
+import com.gdincu.bandmoot.MainActivity
+import com.gdincu.bandmoot.nav.TurnType
 import java.util.Locale
 
-/**
- * Foreground service owning the BLE link to the single paired 8 Active.
- *
- * Scan (name-regex filter) -> connect -> encrypted auth (key from prefs) ->
- * Notification3 write -> dedup.
- *
- * Transport (XiaomiLink/Crypto/Frame + vendored xiaomi.proto) is ported from
- * Gadgetbridge (AGPL-3.0-or-later) -> this app must stay AGPL-compatible
- * if distributed. See XiaomiProtocol.kt.
- */
+/** Foreground service owning the BLE link to the paired 8 Active. */
 class BandConnectorService : Service() {
 
     private var lastKey: String? = null
     private var lastSentAt: Long = 0
-    // Better-timing state (mirrors NavigatorForMiBand x2/b.java:159 s())
     private var lastTurn: TurnType? = null
     private var lastDistanceM: Long = -1
     private var lastTitleStripped: String? = null
     private var lastDetailStripped: String? = null
     private var link: XiaomiLink? = null
-    private var pendingNav: Triple<String, String, Long>? = null
+    private var pendingNav: Pair<String, String>? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -52,7 +43,6 @@ class BandConnectorService : Service() {
         ensureLink()
     }
 
-    /** (Re)connects when MAC + a valid auth key are stored. */
     private fun ensureLink() {
         val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
         val mac = prefs.getString(PREF_MAC, null)
@@ -61,20 +51,16 @@ class BandConnectorService : Service() {
             updateForeground("BandMoot", "Missing band MAC or auth key — open the app.")
             return
         }
-        if (link?.state() == XiaomiLink.State.READY ||
-            link?.state() == XiaomiLink.State.CONNECTING ||
-            link?.state() == XiaomiLink.State.AUTH
-        ) {
-            return
-        }
+        val s = link?.state()
+        if (s == XiaomiLink.State.READY || s == XiaomiLink.State.CONNECTING || s == XiaomiLink.State.AUTH) return
         updateForeground("BandMoot", "Connecting to $mac …")
         XiaomiLink(this, mac, key!!.trim()) { msg ->
             updateForeground("BandMoot", msg.take(120))
         }.also {
             link = it
             it.setOnReadyListener {
-                pendingNav?.let { (title, detail, _) ->
-                    it.sendNav(title, detail)
+                pendingNav?.let { (title, body) ->
+                    it.sendNav(title, body)
                     pendingNav = null
                 }
             }
@@ -89,10 +75,12 @@ class BandConnectorService : Service() {
                 val turn = runCatching {
                     TurnType.valueOf(intent.getStringExtra(EXTRA_TURN) ?: "BLANK")
                 }.getOrDefault(TurnType.BLANK)
-                val title = intent.getStringExtra(EXTRA_TITLE).orEmpty()
-                val detail = intent.getStringExtra(EXTRA_DETAIL).orEmpty()
-                val distanceM = intent.getLongExtra(EXTRA_DISTANCE_M, -1)
-                onNavInstruction(turn, title, detail, distanceM)
+                onNavInstruction(
+                    turn,
+                    intent.getStringExtra(EXTRA_TITLE).orEmpty(),
+                    intent.getStringExtra(EXTRA_DETAIL).orEmpty(),
+                    intent.getLongExtra(EXTRA_DISTANCE_M, -1),
+                )
             }
             ACTION_CLEAR_NAV -> onNavCleared()
         }
@@ -100,78 +88,47 @@ class BandConnectorService : Service() {
     }
 
     private fun onNavInstruction(turn: TurnType, title: String, detail: String, distanceM: Long) {
-        // Better timing: NavigatorForMiBand x2/b.java:159 s() — only buzz when
-        // turn changes, status appears, distance hits / crosses a threshold, or
-        // distance increases (reroute). This replaces the old 50 m bucket + 3 s
-        // window which still buzzed on every countdown tick between thresholds.
+        // Only buzz on turn change, status, threshold hit/cross, reroute or text change.
         val now = System.currentTimeMillis()
         val titleStripped = title.withoutDistances()
         val detailStripped = detail.withoutDistances()
-
-        // Status notifications (No GPS / Let's go!) have no distance and arrive as
-        // `channel_live_navigation` ProgressStyle with TITLE="No GPS …"/"Let's go!".
-        // They must be forwarded (user requested) but throttled to avoid 1/sec spam
-        // while GPS is still missing — use STATUS_DEDUP_WINDOW_MS (Navigator rerouting
-        // always passes, we throttle statuses instead).
         val isStatus = turn == TurnType.NO_GPS || turn == TurnType.LETS_GO
         val shouldSend = when {
             lastTurn == null -> true
-            isStatus -> {
-                if (turn == lastTurn && titleStripped == lastTitleStripped && now - lastSentAt < STATUS_DEDUP_WINDOW_MS) false
-                else true
-            }
+            isStatus ->
+                !(turn == lastTurn && titleStripped == lastTitleStripped && now - lastSentAt < STATUS_DEDUP_WINDOW_MS)
             turn != lastTurn -> true
-            // Same turn, same stripped text: apply distance-threshold gating
-            else -> {
-                if (distanceM == -1L || lastDistanceM == -1L) {
-                    // No parsable distance (e.g. Komoot stats tick): fallback to time window
-                    val key = "$turn|$titleStripped|$detailStripped"
-                    !(key == lastKey && now - lastSentAt < DEDUP_WINDOW_MS)
-                } else {
-                    if (distanceM == lastDistanceM && titleStripped == lastTitleStripped && detailStripped == lastDetailStripped) {
-                        false
-                    } else if (distanceM > lastDistanceM) {
-                        true // moving away / reroute
-                    } else if (titleStripped != lastTitleStripped || detailStripped != lastDetailStripped) {
-                        true // street/text changed (new step) even if between thresholds
-                    } else if (distanceM in DISTANCE_THRESHOLDS_M) {
-                        true // exact threshold hit (x2/b.java m())
-                    } else if (crossedThreshold(lastDistanceM, distanceM)) {
-                        true // crossed a threshold between ticks (x2/b.java w.f())
-                    } else {
-                        // Pure countdown tick between thresholds — suppress
-                        false
-                    }
-                }
+            distanceM == -1L || lastDistanceM == -1L -> {
+                val key = "$turn|$titleStripped|$detailStripped|$distanceM"
+                !(key == lastKey && now - lastSentAt < DEDUP_WINDOW_MS)
             }
+            distanceM == lastDistanceM && titleStripped == lastTitleStripped && detailStripped == lastDetailStripped -> false
+            distanceM > lastDistanceM -> true
+            titleStripped != lastTitleStripped || detailStripped != lastDetailStripped -> true
+            distanceM in DISTANCE_THRESHOLDS_M -> true
+            crossedThreshold(lastDistanceM, distanceM) -> true
+            else -> false
         }
         if (!shouldSend) {
             Log.d(TAG, "Suppressed tick: turn=$turn dist=${distanceM}m last=${lastDistanceM}m")
             return
         }
 
-        val key = "$turn|$titleStripped|$detailStripped|$distanceM"
-        lastKey = key
+        lastKey = "$turn|$titleStripped|$detailStripped|$distanceM"
         lastTurn = turn
         lastDistanceM = distanceM
         lastTitleStripped = titleStripped
         lastDetailStripped = detailStripped
         lastSentAt = now
 
-        // Arrow glyph per turn. All left-family variants (slight/sharp/keep) collapse to
-        // the plain left arrow, likewise right; LETS_GO shows the straight arrow. UTURN,
-        // ROUNDABOUT, ARRIVE, NO_GPS, FORK and BLANK render with no arrow glyph.
         val arrow = when (turn) {
-            TurnType.LEFT, TurnType.SLIGHT_LEFT, TurnType.SHARP_LEFT, TurnType.KEEP_LEFT -> "← "
-            TurnType.RIGHT, TurnType.SLIGHT_RIGHT, TurnType.SHARP_RIGHT, TurnType.KEEP_RIGHT -> "→ "
+            TurnType.LEFT, TurnType.SHARP_LEFT, TurnType.KEEP_LEFT -> "← "
+            TurnType.RIGHT, TurnType.SHARP_RIGHT, TurnType.KEEP_RIGHT -> "→ "
             TurnType.STRAIGHT, TurnType.DEPART, TurnType.LETS_GO -> "↑ "
             else -> ""
         }
-        // Band layout (tested on the 8 Active): title row = arrow + distance
-        // ("← 31m"), body = street name ("Aleea Constantin Brancusi").
-        // Statuses (No GPS / Let's go) have no distance: keep their text in the title.
-        // The body must never be empty or the band drops the card (observed with
-        // title-only statuses), so streetLabel falls back to the title text.
+        // Title = arrow + distance, body = street; statuses keep their text as title.
+        // Body must not be empty or the band drops the card.
         val distanceLabel = formatDistanceLabel(distanceM)
         val bandTitle = if (isStatus || distanceLabel == null) {
             (arrow + title).take(120)
@@ -184,9 +141,7 @@ class BandConnectorService : Service() {
         if (l?.state() == XiaomiLink.State.READY) {
             l.sendNav(bandTitle, bandBody)
         } else {
-            // Band not linked yet (or reconnecting): remember the latest step and
-            // flush it in the onReady callback so the first turn isn't lost.
-            pendingNav = Triple(bandTitle, bandBody, distanceM)
+            pendingNav = bandTitle to bandBody
         }
         updateForeground("🧭 $title", detail.ifBlank { turn.name })
     }
@@ -208,12 +163,10 @@ class BandConnectorService : Service() {
         super.onDestroy()
     }
 
-    // --- scan helpers (used by MainActivity) ---
-
     companion object {
         private const val TAG = "BandConnectorService"
-        const val ACTION_SEND_NAV = "com.example.bandmoot.SEND_NAV"
-        const val ACTION_CLEAR_NAV = "com.example.bandmoot.CLEAR_NAV"
+        const val ACTION_SEND_NAV = "com.gdincu.bandmoot.SEND_NAV"
+        const val ACTION_CLEAR_NAV = "com.gdincu.bandmoot.CLEAR_NAV"
         const val EXTRA_TURN = "turn"
         const val EXTRA_TITLE = "title"
         const val EXTRA_DETAIL = "detail"
@@ -221,8 +174,6 @@ class BandConnectorService : Service() {
 
         const val DEDUP_WINDOW_MS = 3000L
         const val STATUS_DEDUP_WINDOW_MS = 8000L
-        // NavigatorForMiBand defaults: 0,10,20,50,100,200,1000,2000,5000 (d.java:25 +
-        // Configuration.java:48). Bike-tuned: drop 10 m (too noisy), add 500 m.
         val DISTANCE_THRESHOLDS_M = listOf(0L, 20L, 50L, 100L, 200L, 500L, 1000L, 2000L, 5000L)
         private val STREET_TRIM_CHARS = charArrayOf(' ', '•', '·', '-', '–', '|', ',')
         const val PREFS = "bandmoot"
@@ -230,9 +181,7 @@ class BandConnectorService : Service() {
         const val PREF_AUTH_KEY = "authKey"
 
         fun scanFilter(): ScanFilter = ScanFilter.Builder()
-            .setServiceUuid(
-                android.os.ParcelUuid(XiaomiProtocol.SERVICE_FE95),
-            )
+            .setServiceUuid(ParcelUuid(XiaomiProtocol.SERVICE_FE95))
             .build()
 
         fun scanSettings(): ScanSettings = ScanSettings.Builder()
@@ -249,63 +198,52 @@ class BandConnectorService : Service() {
         const val NOTIF_ID = 41
     }
 
-    /** "31m" under 1 km, "1.2km" above; null when Komoot gave no distance. */
     private fun formatDistanceLabel(distanceM: Long): String? = when {
         distanceM < 0 -> null
         distanceM < 1000 -> "${distanceM}m"
         else -> "%.1f".format(Locale.ROOT, distanceM / 1000.0).removeSuffix(".0") + "km"
     }
 
-    /** Komoot carries the street on both lines ("… onto High St" / "250 m - High St");
-     *  prefer the distance-stripped detail, fall back to the stripped title. */
     private fun streetLabel(detail: String, title: String): String {
         val fromDetail = detail.withoutDistances().trim(*STREET_TRIM_CHARS)
         if (fromDetail.isNotEmpty()) return fromDetail
         return title.withoutDistances().trim(*STREET_TRIM_CHARS)
     }
 
-    /** Strips distance tokens ("30 m • ", "0.1 km") so countdown reposts dedup. */
     private fun String.withoutDistances(): String =
         replace(
             Regex("[0-9]+[.,]?[0-9]*\\s*(m|km|mi|ft|yd)\\b\\s*[•·\\-–|]?\\s*", RegexOption.IGNORE_CASE),
             "",
         ).trim()
 
-    /** NavigatorForMiBand w.java:66 f() — crossed a configured threshold between ticks. */
     private fun crossedThreshold(prev: Long, cur: Long): Boolean {
         if (prev <= cur) return false
         return DISTANCE_THRESHOLDS_M.any { it in (cur + 1) until prev }
     }
 
-    private fun startAsForeground() {
-        val mgr = getSystemService(NotificationManager::class.java)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            mgr.createNotificationChannel(
-                NotificationChannel(
-                    CHANNEL_ID,
-                    "Band link",
-                    NotificationManager.IMPORTANCE_LOW,
-                ),
-            )
-        }
+    private fun buildNotification(title: String, text: String): Notification {
         val pi = PendingIntent.getActivity(
             this,
             0,
             Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
-        val notif: Notification = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("BandMoot")
-            .setContentText("Waiting for Komoot navigation…")
+        return NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentTitle(title)
+            .setContentText(text)
             .setSmallIcon(android.R.drawable.ic_dialog_map)
             .setContentIntent(pi)
             .setOngoing(true)
             .build()
-        // Android 14+ validates FGS type against granted permissions at startForeground().
-        // connectedDevice requires FOREGROUND_SERVICE_CONNECTED_DEVICE + BLUETOOTH_CONNECT
-        // (or other BT/NFC perms). KomootListenerService can trigger the service before
-        // MainActivity ever requested BLUETOOTH_CONNECT, so we must not crash — fall
-        // back to a type that doesn't need BT.
+    }
+
+    private fun startAsForeground() {
+        val mgr = getSystemService(NotificationManager::class.java)
+        mgr.createNotificationChannel(
+            NotificationChannel(CHANNEL_ID, "Band link", NotificationManager.IMPORTANCE_LOW),
+        )
+        val notif = buildNotification("BandMoot", "Waiting for Komoot navigation…")
+        // connectedDevice needs BT permissions which may not be granted yet; fall back instead of crashing.
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 val hasFgsPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
@@ -320,21 +258,12 @@ class BandConnectorService : Service() {
                         Manifest.permission.BLUETOOTH_CONNECT,
                     ) == PackageManager.PERMISSION_GRANTED
                 } else true
-                val useConnectedDevice = hasFgsPermission && hasBtPermission
-                if (useConnectedDevice) {
-                    startForeground(
-                        NOTIF_ID,
-                        notif,
-                        ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE,
-                    )
+                if (hasFgsPermission && hasBtPermission) {
+                    startForeground(NOTIF_ID, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
                 } else {
-                    Log.w(TAG, "FGS connectedDevice not granted (fgs=$hasFgsPermission bt=$hasBtPermission), using fallback")
+                    Log.w(TAG, "FGS connectedDevice not granted, using fallback")
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                        startForeground(
-                            NOTIF_ID,
-                            notif,
-                            ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE,
-                        )
+                        startForeground(NOTIF_ID, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
                     } else {
                         startForeground(NOTIF_ID, notif)
                     }
@@ -358,20 +287,6 @@ class BandConnectorService : Service() {
     }
 
     private fun updateForeground(title: String, text: String) {
-        val mgr = getSystemService(NotificationManager::class.java)
-        val pi = PendingIntent.getActivity(
-            this,
-            0,
-            Intent(this, MainActivity::class.java),
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-        )
-        val notif: Notification = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle(title)
-            .setContentText(text)
-            .setSmallIcon(android.R.drawable.ic_dialog_map)
-            .setContentIntent(pi)
-            .setOngoing(true)
-            .build()
-        mgr.notify(NOTIF_ID, notif)
+        getSystemService(NotificationManager::class.java).notify(NOTIF_ID, buildNotification(title, text))
     }
 }

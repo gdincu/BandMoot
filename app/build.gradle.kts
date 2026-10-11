@@ -4,21 +4,47 @@ plugins {
     id("com.google.protobuf")
 }
 
+val keystorePropsFile = rootProject.file("keystore.properties")
+val keystoreProps = java.util.Properties().also { props ->
+    if (keystorePropsFile.exists()) java.io.FileInputStream(keystorePropsFile).use(props::load)
+}
+val releaseStorePath: String? =
+    System.getenv("ANDROID_KEYSTORE_FILE") ?: keystoreProps.getProperty("storeFile")
+val hasReleaseSigning = !releaseStorePath.isNullOrBlank()
+
 android {
-    namespace = "com.example.bandmoot"
+    namespace = "com.gdincu.bandmoot"
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "com.example.bandmoot"
+        applicationId = "com.gdincu.bandmoot"
         minSdk = 26
         targetSdk = 34
         versionCode = 1
         versionName = "0.1.0"
     }
 
+    signingConfigs {
+        create("release") {
+            if (hasReleaseSigning) {
+                storeFile = rootProject.file(releaseStorePath!!)
+                storePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD")
+                    ?: keystoreProps.getProperty("storePassword")
+                keyAlias = System.getenv("ANDROID_KEY_ALIAS")
+                    ?: keystoreProps.getProperty("keyAlias")
+                keyPassword = System.getenv("ANDROID_KEY_PASSWORD")
+                    ?: keystoreProps.getProperty("keyPassword")
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
+            if (hasReleaseSigning) {
+                signingConfig = signingConfigs.getByName("release")
+            }
+            // Without keys this builds app-release-unsigned.apk; sign it before deploying.
         }
     }
     compileOptions {
@@ -28,19 +54,12 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
-    buildFeatures {
-        viewBinding = true
-    }
 }
 
 dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.appcompat:appcompat:1.7.0")
-    implementation("com.google.android.material:material:1.12.0")
-    // Xiaomi wire protocol (vendored Gadgetbridge xiaomi.proto -> XiaomiProto).
     implementation("com.google.protobuf:protobuf-javalite:4.29.1")
-    // AES-CCM for the Xiaomi encrypted handshake (lightweight API only,
-    // no JCE provider registration -> no conflict with Android's built-in BC).
     implementation("org.bouncycastle:bcprov-jdk18on:1.78.1")
 }
 

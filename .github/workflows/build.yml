@@ -1,7 +1,10 @@
-name: Build debug APK
+name: Build APKs
 
-# Builds app-debug.apk on every push/PR without needing Android Studio locally.
-# Result: Actions tab -> this run -> Artifacts -> bandmoot-debug -> install on phone.
+# Builds debug + release APKs on every push/PR without needing Android Studio locally.
+# Result: Actions tab -> this run -> Artifacts -> bandmoot-debug / bandmoot-release.
+# - bandmoot-debug: debug-signed, installs directly for testing.
+# - bandmoot-release: signed when keystore secrets exist, otherwise
+#   app-release-unsigned.apk (sign before deploying, see README).
 on:
   push:
     branches: [master, main]
@@ -37,15 +40,27 @@ jobs:
         with:
           gradle-version: "8.7"
 
-      - name: Build debug APK
+      - name: Restore release keystore (signed builds only)
+        if: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
+        run: |
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > release.keystore
+          echo "ANDROID_KEYSTORE_FILE=$GITHUB_WORKSPACE/release.keystore" >> "$GITHUB_ENV"
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+
+      - name: Build debug + release APKs
         run: |
           set -o pipefail
-          gradle :app:assembleDebug --stacktrace 2>&1 | tee gradle.log
+          gradle :app:assembleDebug :app:assembleRelease --stacktrace 2>&1 | tee gradle.log
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
 
       - name: List outputs
         if: always()
         run: |
-          echo "=== apk ==="; ls -lh app/build/outputs/apk/debug 2>&1 || true
+          echo "=== apk ==="; ls -lh app/build/outputs/apk/debug app/build/outputs/apk/release 2>&1 || true
           echo "=== find apk ==="; find . -maxdepth 5 -name "*.apk" | xargs ls -lh 2>&1 || true
 
       - name: Upload build log
@@ -53,6 +68,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with: {name: gradle-log, path: gradle.log, if-no-files-found: warn}
 
-      - name: Upload APK
+      - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with: {name: bandmoot-debug, path: app/build/outputs/apk/debug/app-debug.apk, if-no-files-found: warn}
+
+      - name: Upload release APK
+        uses: actions/upload-artifact@v4
+        with: {name: bandmoot-release, path: app/build/outputs/apk/release/*.apk, if-no-files-found: warn}

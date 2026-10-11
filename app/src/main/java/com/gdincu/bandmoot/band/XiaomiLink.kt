@@ -1,4 +1,4 @@
-package com.example.bandmoot.band
+package com.gdincu.bandmoot.band
 
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothDevice
@@ -6,6 +6,7 @@ import android.bluetooth.BluetoothGatt
 import android.bluetooth.BluetoothGattCallback
 import android.bluetooth.BluetoothGattCharacteristic
 import android.bluetooth.BluetoothGattDescriptor
+import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
 import android.content.Context
 import android.os.Build
@@ -20,23 +21,8 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 
-/**
- * Minimal Xiaomi BLE link for Mi Band 8 Active (nav-only).
- *
- * Ported call-flow from Gadgetbridge (AGPL-3.0-or-later):
- * - `XiaomiBleSupport.initializeDevice` (find FE95 service, MTU 512 request,
- *   notify on, then auth handshake because the set `isEncrypted`)
- * - `XiaomiAuthService` (plaintext auth packets until CMD_AUTH confirms)
- * - `XiaomiNotificationService.onNotification/onDeleteNotification`
- *   (Command type 7, subtypes 0/1)
- *
- * Plain Android BluetoothGatt, no Gadgetbridge framework. Single-threaded op
- * queue; every blocking step has a timeout so a stuck band can't hang the service.
- *
- * UNTESTED AGAINST HARDWARE: framing/crypto are line-faithful ports, but the
- * first live run must be done with logcat open (see Step3 notes in reply).
- */
-@SuppressLint("MissingPermission") // caller guards BLUETOOTH_CONNECT/SCAN (MainActivity + manifest)
+/** Minimal Xiaomi BLE link for Mi Band 8 Active (nav-only). */
+@SuppressLint("MissingPermission")
 class XiaomiLink(
     private val context: Context,
     private val mac: String,
@@ -50,20 +36,21 @@ class XiaomiLink(
     private var mtu = 247
     private var charWrite: BluetoothGattCharacteristic? = null
     private var keys: XiaomiCrypto.SessionKeys? = null
-    private var encIndex = 1 // 0 is reserved for the auth phase (Characteristic.reset)
+    private var encIndex = 1
     @Volatile private var lastSentId: Int? = null
     private var onReadyListener: (() -> Unit)? = null
 
-    // pending single-write ack / chunked handshake latches
     @Volatile private var ackLatch: CountDownLatch? = null
-    @Volatile private var writeLatch: CountDownLatch? = null // one outstanding GATT write
-    @Volatile private var writeStatus = BluetoothGatt.GATT_SUCCESS // ATT result of last write
+    @Volatile private var writeLatch: CountDownLatch? = null
+    @Volatile private var writeStatus = BluetoothGatt.GATT_SUCCESS
     @Volatile private var ackResult = -1
-    @Volatile private var chunkLatch: CountDownLatch? = null // chunked-start acked
-    @Volatile private var chunkEndLatch: CountDownLatch? = null // all chunks acked
+    @Volatile private var chunkLatch: CountDownLatch? = null
+    @Volatile private var chunkEndLatch: CountDownLatch? = null
     @Volatile private var authNonce: ByteArray? = null
-    @Volatile private var authReplyLatch: CountDownLatch? = null
-    @Volatile private var authConfirmed = false
+    @Volatile private var connectedLatch = CountDownLatch(1)
+    @Volatile private var mtuLatch = CountDownLatch(1)
+    @Volatile private var notifyLatch = CountDownLatch(1)
+    @Volatile private var pendingResend: ShortArray? = null
     private val reassembler = XiaomiFrame.Reassembler()
 
     enum class State { IDLE, CONNECTING, AUTH, READY, FAILED }
@@ -78,15 +65,11 @@ class XiaomiLink(
         io.execute {
             try {
                 state.set(State.CONNECTING)
-                val device: BluetoothDevice =
-                    XiaomiUuidsHelper.adapter(context).getRemoteDevice(mac)
+                val adapter = (context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter
+                val device: BluetoothDevice = adapter.getRemoteDevice(mac)
                 log("Connecting to $mac …")
                 connectedLatch = CountDownLatch(1)
-                gatt = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                    device.connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
-                } else {
-                    device.connectGatt(context, false, gattCallback)
-                }
+                gatt = device.connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
                 if (!connectedLatch.await(15, TimeUnit.SECONDS)) {
                     fail("GATT connect timeout"); return@execute
                 }
@@ -115,16 +98,8 @@ class XiaomiLink(
         }
     }
 
-    /**
-     * Sends/updates the ongoing nav notification. Safe to call before READY (drops + logs).
-     *
-     * Re-sending the same [id] updates the card in place. We deliberately do NOT
-     * dismiss before sending (Gadgetbridge's XiaomiNotificationService only dismisses
-     * when the phone-side notification is removed): the dismiss raced the re-add, and
-     * same-id re-adds right after a dismiss were ignored by the band, so the card was
-     * never visible.
-     */
-    fun sendNav(title: String, body: String, id: Int = NAV_ID, key: String? = null) {
+    /** Sends/updates the ongoing nav notification. Re-sending the same [id] updates in place. */
+    fun sendNav(title: String, body: String, id: Int = NAV_ID) {
         io.execute {
             if (state.get() != State.READY) {
                 log("sendNav dropped: link not READY (${state.get()})")
@@ -140,10 +115,6 @@ class XiaomiLink(
                     .setAppName("Komoot")
                     .setTitle(title.take(120))
                 if (body.isNotEmpty()) n3.body = body.take(512)
-                if (key != null) {
-                    n3.key = key
-                    n3.openOnPhone = false
-                }
                 val cmd = XiaomiProto.Command.newBuilder()
                     .setType(NOTIF_TYPE)
                     .setSubtype(CMD_NOTIF_SEND)
@@ -176,20 +147,15 @@ class XiaomiLink(
         }
     }
 
-    /**
-     * Band-side "screen on on notifications" setting (Gadgetbridge
-     * PREF_SCREEN_ON_ON_NOTIFICATIONS): wakes the band screen whenever a
-     * notification arrives. Unsupported firmware just NACKs, caller tolerates it.
-     */
-    private fun setScreenOnOnNotifications(enabled: Boolean) {
+    private fun setScreenOnOnNotifications() {
         val cmd = XiaomiProto.Command.newBuilder()
             .setType(NOTIF_TYPE)
             .setSubtype(CMD_SCREEN_ON_ON_NOTIFICATIONS_SET)
             .setNotification(
-                XiaomiProto.Notification.newBuilder().setScreenOnOnNotifications(enabled),
+                XiaomiProto.Notification.newBuilder().setScreenOnOnNotifications(true),
             )
             .build()
-        writeCommand(cmd.toByteArray(), "screen-on-on-notifications=$enabled")
+        writeCommand(cmd.toByteArray(), "screen-on-on-notifications=true")
     }
 
     private fun sendNavDismiss(id: Int) {
@@ -213,10 +179,6 @@ class XiaomiLink(
             .build()
         writeCommand(cmd.toByteArray(), "clear nav $id")
     }
-
-    // ---------- internals ----------
-
-    @Volatile private var connectedLatch = CountDownLatch(1)
 
     private val gattCallback = object : BluetoothGattCallback() {
         override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
@@ -255,11 +217,8 @@ class XiaomiLink(
             notifyLatch.countDown()
         }
 
-        // Protocol-ack latches are signalled HERE on the binder thread, not on
-        // `io`: `io` is blocked inside writeCommand awaiting these latches
-        // during auth, so queueing the signal behind `io` deadlocks and always
-        // times out ("setup: auth step 1: no ack (result=-1)"). Only the heavy
-        // decrypt/dispatch goes to `io`.
+        // Acks are signalled here on the binder thread: `io` may be blocked waiting
+        // for them, so queueing behind `io` would deadlock. Heavy work goes to `io`.
         override fun onCharacteristicChanged(
             g: BluetoothGatt,
             characteristic: BluetoothGattCharacteristic,
@@ -282,14 +241,10 @@ class XiaomiLink(
         }
 
         override fun onCharacteristicWrite(g: BluetoothGatt, c: BluetoothGattCharacteristic, status: Int) {
-            // ATT-level ack: unblocks sendRaw so only one GATT op is ever in flight.
             writeStatus = status
             writeLatch?.countDown()
         }
     }
-
-    @Volatile private var mtuLatch = CountDownLatch(1)
-    @Volatile private var notifyLatch = CountDownLatch(1)
 
     private fun onServicesReady(g: BluetoothGatt) {
         val svc = g.getService(XiaomiProtocol.SERVICE_FE95)
@@ -306,7 +261,7 @@ class XiaomiLink(
 
         mtuLatch = CountDownLatch(1)
         g.requestMtu(512)
-        mtuLatch.await(5, TimeUnit.SECONDS) // proceed with 247 default on timeout
+        mtuLatch.await(5, TimeUnit.SECONDS)
 
         for (c in listOf(write, read, activity).filterNotNull()) {
             if (!enableNotify(g, c)) {
@@ -337,16 +292,10 @@ class XiaomiLink(
         encIndex = 1
         val phoneNonce = XiaomiCrypto.randomNonce()
         authNonce = phoneNonce
-        authConfirmed = false
         log("Auth step 1: sending phone nonce…")
         writeCommand(XiaomiCrypto.buildNonceCommand(phoneNonce).toByteArray(), "auth step 1")
-        // step 2+3 continue in onIncoming when the WatchNonce arrives
     }
 
-    /**
-     * Fast path on the BLE binder thread: unblock writeCommand immediately.
-     * Must never do GATT writes or touch `io` here.
-     */
     private fun signalProtocolAcks(value: ByteArray) {
         when (val msg = XiaomiFrame.decode(value)) {
             is XiaomiFrame.Incoming.Ack -> {
@@ -361,34 +310,20 @@ class XiaomiLink(
             }
             is XiaomiFrame.Incoming.ChunkResend -> {
                 pendingResend = msg.indices
-                chunkLatch?.countDown() // wake sender to resend listed chunks
+                chunkLatch?.countDown()
             }
-            else -> Unit // Single/ChunkedStart/Chunk handled on `io`
+            else -> Unit
         }
     }
 
-    /** Heavy path on `io`: ack incoming payloads, decrypt, dispatch commands. */
     private fun onIncomingRouted(value: ByteArray) {
-        when (val msg = XiaomiFrame.decode(value)) {
-            is XiaomiFrame.Incoming.Ack -> {
-                log("rx ack result=${msg.result}")
-                return // latch already signalled on the binder thread
-            }
-            XiaomiFrame.Incoming.ChunkAckStart -> {
-                log("rx chunk-start-ack")
-                return
-            }
-            XiaomiFrame.Incoming.ChunkAckEnd -> {
-                log("rx chunk-end-ack")
-                return
-            }
+        when (XiaomiFrame.decode(value)) {
+            is XiaomiFrame.Incoming.Ack,
+            XiaomiFrame.Incoming.ChunkAckStart,
+            XiaomiFrame.Incoming.ChunkAckEnd,
             XiaomiFrame.Incoming.ChunkNack,
             is XiaomiFrame.Incoming.ChunkResend,
-            is XiaomiFrame.Incoming.MissingChunks,
-            -> {
-                if (msg is XiaomiFrame.Incoming.MissingChunks) sendMissing(msg.indices)
-                return
-            }
+            -> return
             else -> onIncoming(value)
         }
     }
@@ -425,33 +360,9 @@ class XiaomiLink(
                 }
                 onCommand(payload)
             }
-            is XiaomiFrame.Incoming.Ack -> {
-                log("rx ack result=${msg.result}")
-                ackResult = msg.result
-                ackLatch?.countDown()
-            }
-            XiaomiFrame.Incoming.ChunkAckStart -> {
-                log("rx chunk-start-ack")
-                chunkLatch?.countDown()
-            }
-            XiaomiFrame.Incoming.ChunkAckEnd -> {
-                log("rx chunk-end-ack")
-                chunkEndLatch?.countDown()
-            }
-            XiaomiFrame.Incoming.ChunkNack -> {
-                chunkEndLatch?.countDown()
-                ackLatch?.countDown()
-            }
-            is XiaomiFrame.Incoming.ChunkResend -> {
-                pendingResend = msg.indices
-                chunkLatch?.countDown() // wake sender to resend listed chunks
-            }
-            is XiaomiFrame.Incoming.MissingChunks -> sendMissing(msg.indices)
-            is XiaomiFrame.Incoming.Unknown -> log("Unknown packet ${value.size}B")
+            else -> log("Unknown packet ${value.size}B")
         }
     }
-
-    @Volatile private var pendingResend: ShortArray? = null
 
     private fun onCommand(payload: ByteArray) {
         val cmd = runCatching { XiaomiProto.Command.parseFrom(payload) }.getOrElse {
@@ -459,7 +370,7 @@ class XiaomiLink(
         }
         when (cmd.type) {
             XiaomiCrypto.AUTH_TYPE -> when (cmd.subtype) {
-                XiaomiCrypto.CMD_NONCE -> { // WatchNonce
+                XiaomiCrypto.CMD_NONCE -> {
                     val phoneNonce = authNonce ?: return
                     log("Auth step 2: watch nonce received, verifying…")
                     val result = XiaomiCrypto.handleWatchNonce(secretKey, phoneNonce, cmd.auth.watchNonce)
@@ -468,18 +379,12 @@ class XiaomiLink(
                         return
                     }
                     keys = result.first
-                    authReplyLatch = CountDownLatch(1)
                     writeCommand(result.second.toByteArray(), "auth step 3")
                 }
                 XiaomiCrypto.CMD_AUTH -> {
-                    authConfirmed = true
-                    authReplyLatch?.countDown()
                     state.set(State.READY)
                     log("Authenticated. Link READY.")
-                    // Wake the band screen whenever a notification (nav card) arrives.
-                    // Band-side persistent setting, as in Gadgetbridge's
-                    // PREF_SCREEN_ON_ON_NOTIFICATIONS; must not kill the link if it fails.
-                    runCatching { setScreenOnOnNotifications(true) }
+                    runCatching { setScreenOnOnNotifications() }
                         .onFailure { log("screen-on-on-notifications failed: ${it.message}") }
                     onReadyListener?.invoke()
                 }
@@ -490,16 +395,13 @@ class XiaomiLink(
         }
     }
 
-    /** Encrypts (once READY) and sends one Command, single or chunked. */
     private fun writeCommand(plain: ByteArray, task: String) {
-        val g = gatt ?: throw IllegalStateException("no gatt")
-        val ch = charWrite ?: throw IllegalStateException("no write char")
         val ready = state.get() == State.READY
         val sessionKeys = keys
         val bytes = if (ready && sessionKeys != null) {
             XiaomiCrypto.encrypt(sessionKeys.encryptionKey, sessionKeys.encryptionNonce, encIndex, plain)
         } else {
-            plain // auth phase goes out in plaintext framing (Characteristic.sendNext)
+            plain
         }
         val maxWrite = XiaomiFrame.maxWriteSize(mtu)
         if (!XiaomiFrame.shouldWriteChunked(bytes.size, ready, maxWrite)) {
@@ -518,10 +420,8 @@ class XiaomiLink(
             log("$task: ack ok")
             return
         }
-        // chunked
         var payload = bytes
-        val useIndex = ready
-        if (useIndex) {
+        if (ready) {
             payload = XiaomiFrame.prependEncIndex(payload, encIndex)
             encIndex++
         }
@@ -546,19 +446,9 @@ class XiaomiLink(
         log("$task: chunks acked")
     }
 
-    private fun sendMissing(indices: ShortArray) {
-        // Band missed some of OUR chunks only during sends we track; simplest
-        // correct behavior for nav payloads: the chunkEndLatch path already covers
-        // resends via ChunkResend. Log and continue.
-        log("Band reports missing chunks ${indices.toList()} (see resend path)")
-    }
-
     private fun sendRaw(bytes: ByteArray, task: String) {
         val g = gatt ?: throw IllegalStateException("no gatt")
         val ch = charWrite ?: throw IllegalStateException("no write char")
-        // 0x0052 exposes write-without-response only: write-with-response gets
-        // ATT status 3 (observed). Pick per characteristic properties so other
-        // firmwares with plain WRITE keep working.
         val writeType = if (ch.properties and
             BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE != 0
         ) {
@@ -569,8 +459,6 @@ class XiaomiLink(
         ch.writeType = writeType
         @Suppress("DEPRECATION")
         ch.value = bytes
-        // Android allows a single outstanding GATT op: arm the ATT latch first,
-        // then retry busy rejections (rc 201/202) instead of crashing on them.
         writeStatus = BluetoothGatt.GATT_SUCCESS
         writeLatch = CountDownLatch(1)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -593,10 +481,6 @@ class XiaomiLink(
             }
             if (!ok) throw IllegalStateException("$task: write refused")
         }
-        // Wait for onCharacteristicWrite so the next op never collides with this one.
-        // The ATT status is decisive: 0 = band accepted the bytes, 3 = write not
-        // permitted, 5 = insufficient authentication (band demands BLE bonding),
-        // 133 = link loss. Anything nonzero means no protocol reply can follow.
         writeLatch?.await(5, TimeUnit.SECONDS)
         if (writeStatus != BluetoothGatt.GATT_SUCCESS) {
             throw IllegalStateException("$task: ATT write rejected, status=$writeStatus")
@@ -623,9 +507,4 @@ class XiaomiLink(
         const val CMD_SCREEN_ON_ON_NOTIFICATIONS_SET = 7
         const val NAV_ID = 1001
     }
-}
-
-private object XiaomiUuidsHelper {
-    fun adapter(context: Context) =
-        (context.getSystemService(Context.BLUETOOTH_SERVICE) as android.bluetooth.BluetoothManager).adapter
 }

@@ -1,4 +1,4 @@
-package com.example.bandmoot
+package com.gdincu.bandmoot
 
 import android.Manifest
 import android.bluetooth.le.ScanCallback
@@ -16,12 +16,11 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
-import com.example.bandmoot.band.BandConnectorService
-import com.example.bandmoot.band.XiaomiProtocol
+import com.gdincu.bandmoot.band.BandConnectorService
+import com.gdincu.bandmoot.band.XiaomiProtocol
 
 /**
- * Single-screen setup: notification access -> BLE scan (8 Active only) -> auth key ->
- * start link service. No fitness, watchface, or health features on purpose.
+ * Single-screen setup: notification access -> BLE scan -> auth key -> start link service.
  */
 class MainActivity : AppCompatActivity() {
 
@@ -79,11 +78,7 @@ class MainActivity : AppCompatActivity() {
             text = "4. Start link service"
             setOnClickListener {
                 val svc = Intent(this@MainActivity, BandConnectorService::class.java)
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    startForegroundService(svc)
-                } else {
-                    startService(svc)
-                }
+                startForegroundService(svc)
                 log("Link service started. Start a Komoot ride.")
             }
         }
@@ -95,15 +90,12 @@ class MainActivity : AppCompatActivity() {
         layout.addView(btnStart)
         setContentView(ScrollView(this).apply { addView(layout) })
 
-        // MAC seen in your Mi Fitness log (04:DA:28:1C:36:32): prefill once so the
-        // scan step can be skipped if the band is already known.
+        // Prefill once so the scan step can be skipped when the band is already known.
         if (prefs().getString(BandConnectorService.PREF_MAC, null).isNullOrBlank()) {
             prefs().edit().putString(BandConnectorService.PREF_MAC, DEFAULT_MAC).apply()
         }
 
-        // Foreground-service status ("Band link" entry) is suppressed entirely
-        // without this on API 33+; the app never asked, so first-run users see
-        // no entry and miss the link state.
+        // Needed on API 33+ for the foreground-service status entry.
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             ActivityCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) !=
             PackageManager.PERMISSION_GRANTED
@@ -179,19 +171,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     companion object {
-        /** MAC from your Mi Fitness device log (Xiaomi Smart Band 8 Active). */
         const val DEFAULT_MAC = "04:DA:28:1C:36:32"
 
-        /**
-         * Candidate BLE auth key for the 8 Active, from the Mi Fitness
-         * `requestBindDeviceList` log: `token`/`encryptKey` =
-         * 21c22a78e8526957f65b412ff8a64e27 (32 hex = 16 bytes, the size the
-         * Xiaomi encrypted handshake needs). NOT confirmed — the log's real
-         * `authKey` field is null for this band (compare: your Band 7 in the
-         * same log carries authKey=56364ad0949dab6f79c91bfcd5a6d189).
-         * The link's HMAC check is the definitive test: READY = correct key,
-         * "Auth FAILED: band HMAC mismatch" = fall back to the freemyband key.
-         */
+        /** 32-hex BLE auth key candidate (HMAC check decides: READY = correct). */
         const val DEFAULT_AUTH_KEY_CANDIDATE = "21c22a78e8526957f65b412ff8a64e27"
     }
 }
