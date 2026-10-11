@@ -626,8 +626,8 @@ class XiaomiLink(
                     .setPreset(preset)
                     .build()
                 val cmd = XiaomiProto.Command.newBuilder()
-                    .setType(2) // System
-                    .setSubtype(39) // vibrationSetPreset
+                    .setType(SYSTEM_TYPE)
+                    .setSubtype(CMD_VIBRATION_SET_PRESET)
                     .setSystem(
                         XiaomiProto.System.newBuilder()
                             .setVibrationSetPreset(vibType)
@@ -649,6 +649,10 @@ class XiaomiLink(
         const val CMD_NOTIF_SEND = 0
         const val CMD_NOTIF_DISMISS = 1
         const val CMD_SCREEN_ON_ON_NOTIFICATIONS_SET = 7
+        // System (type 2) subtypes, per xiaomi.proto "// 2, N" comments.
+        // vibrationSetPreset is field 39 but wire subtype 47 — 39 is "get workout types".
+        const val SYSTEM_TYPE = 2
+        const val CMD_VIBRATION_SET_PRESET = 47
         const val NAV_ID = 1001
     }
 }
