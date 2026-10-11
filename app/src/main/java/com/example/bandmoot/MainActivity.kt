@@ -27,6 +27,7 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var status: TextView
     private lateinit var authKeyInput: EditText
+    private lateinit var muteToggle: com.google.android.material.switchmaterial.SwitchMaterial
     private var scanning = false
 
     private val scanCallback = object : ScanCallback() {
@@ -39,55 +40,6 @@ class MainActivity : AppCompatActivity() {
             log("Found $name ($mac) — saved. Enter auth key, then Start link.")
         }
     }
-
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-
-        val layout = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(48, 48, 48, 48)
-        }
-        status = TextView(this).apply { text = "BandMoot setup" }
-        authKeyInput = EditText(this).apply {
-            hint = "32-char BLE auth key"
-            val saved = prefs().getString(BandConnectorService.PREF_AUTH_KEY, null)
-            setText(if (saved.isNullOrBlank()) DEFAULT_AUTH_KEY_CANDIDATE else saved)
-        }
-        val btnListener = Button(this).apply {
-            text = "1. Enable notification access"
-            setOnClickListener {
-                startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
-            }
-        }
-        val btnScan = Button(this).apply {
-            text = "2. Scan for 8 Active"
-            setOnClickListener { toggleScan() }
-        }
-        val btnSaveKey = Button(this).apply {
-            text = "3. Save auth key"
-            setOnClickListener {
-                val key = authKeyInput.text.toString().trim()
-                if (!XiaomiProtocol.isValidAuthKey(key)) {
-                    toast("Key must be 32 hex chars (or 0x+32)")
-                    return@setOnClickListener
-                }
-                prefs().edit().putString(BandConnectorService.PREF_AUTH_KEY, key).apply()
-                log("Auth key saved.")
-            }
-        }
-        val btnStart = Button(this).apply {
-            text = "4. Start link service"
-            setOnClickListener {
-                val svc = Intent(this@MainActivity, BandConnectorService::class.java)
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    startForegroundService(svc)
-                } else {
-                    startService(svc)
-                }
-                log("Link service started. Start a Komoot ride.")
-            }
-        }
-    private lateinit var muteToggle: com.google.android.material.switchmaterial.SwitchMaterial
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -151,6 +103,14 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }
+        layout.addView(status)
+        layout.addView(btnListener)
+        layout.addView(btnScan)
+        layout.addView(authKeyInput)
+        layout.addView(btnSaveKey)
+        layout.addView(btnStart)
+        layout.addView(muteToggle)
+        setContentView(ScrollView(this).apply { addView(layout) })
 
         // MAC seen in your Mi Fitness log (04:DA:28:1C:36:32): prefill once so the
         // scan step can be skipped if the band is already known.
