@@ -99,6 +99,10 @@ class BandConnectorService : Service() {
             }
             ACTION_CLEAR_NAV -> onNavCleared()
         }
+        val prefsSvc = getSharedPreferences(PREFS, MODE_PRIVATE)
+        if (link?.state() == XiaomiLink.State.READY) {
+            link?.setNotificationVibrationMuted(prefsSvc.getBoolean(PREF_MUTE_NAV_VIB, false))
+        }
         return START_STICKY
     }
 
