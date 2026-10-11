@@ -158,36 +158,27 @@ class BandConnectorService : Service() {
         lastDetailStripped = detailStripped
         lastSentAt = now
 
-        // Arrow glyph per turn (same idea as dy4 symbols). Large variants for bike glanceability
-        // can be enabled later; these are still single-char but distinct for new statuses.
+        // Arrow glyph per turn. All left-family variants (slight/sharp/keep) collapse to
+        // the plain left arrow, likewise right; LETS_GO shows the straight arrow. UTURN,
+        // ROUNDABOUT, ARRIVE, NO_GPS, FORK and BLANK render with no arrow glyph.
         val arrow = when (turn) {
-            TurnType.LEFT, TurnType.SLIGHT_LEFT -> "← "
-            TurnType.RIGHT, TurnType.SLIGHT_RIGHT -> "→ "
-            TurnType.SHARP_LEFT -> "↰ "
-            TurnType.SHARP_RIGHT -> "↱ "
-            TurnType.UTURN -> "↩ "
-            TurnType.STRAIGHT, TurnType.DEPART -> "↑ "
-            TurnType.KEEP_LEFT -> "⇐ "
-            TurnType.KEEP_RIGHT -> "⇒ "
-            TurnType.ROUNDABOUT -> "◌ "
-            TurnType.ARRIVE -> "⚑ "
-            TurnType.NO_GPS -> "⚠ "
-            TurnType.LETS_GO -> "▶ "
+            TurnType.LEFT, TurnType.SLIGHT_LEFT, TurnType.SHARP_LEFT, TurnType.KEEP_LEFT -> "← "
+            TurnType.RIGHT, TurnType.SLIGHT_RIGHT, TurnType.SHARP_RIGHT, TurnType.KEEP_RIGHT -> "→ "
+            TurnType.STRAIGHT, TurnType.DEPART, TurnType.LETS_GO -> "↑ "
             else -> ""
         }
         // Band layout (tested on the 8 Active): title row = arrow + distance
         // ("← 31m"), body = street name ("Aleea Constantin Brancusi").
         // Statuses (No GPS / Let's go) have no distance: keep their text in the title.
+        // The body must never be empty or the band drops the card (observed with
+        // title-only statuses), so streetLabel falls back to the title text.
         val distanceLabel = formatDistanceLabel(distanceM)
-        val bandTitle: String
-        val bandBody: String
-        if (isStatus || distanceLabel == null) {
-            bandTitle = (arrow + title).take(120)
-            bandBody = detail.take(512)
+        val bandTitle = if (isStatus || distanceLabel == null) {
+            (arrow + title).take(120)
         } else {
-            bandTitle = (arrow + distanceLabel).take(120)
-            bandBody = streetLabel(detail, title).take(512)
+            (arrow + distanceLabel).take(120)
         }
+        val bandBody = streetLabel(detail, title).take(512)
 
         val l = link
         if (l?.state() == XiaomiLink.State.READY) {
