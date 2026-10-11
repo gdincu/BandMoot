@@ -28,36 +28,10 @@ forwards each turn over the band's encrypted BLE protocol.
 
 ## Status
 
-Parsing validated against live captures (`SHARP_LEFT` + distance, u-turns,
+Parsing validated against live captures (`LEFT` + distance, u-turns,
 stats filtering). BLE handshake is a line-faithful port of Gadgetbridge's
 Xiaomi stack and has shown auth-step-1 flakes against real hardware; failures
 degrade to link `FAILED` with a log instead of crashing.
-
-## Release / deploy
-
-Package: `com.gdincu.bandmoot` (re-install required if you had the old
-`com.example.bandmoot` debug build — Android treats it as a different app,
-so unpair/re-grant notification access after installing).
-
-- Debug (`bandmoot-debug` artifact): debug-signed, installs directly for
-  testing. Not for stores.
-- Release (`bandmoot-release` artifact): signed when a keystore is
-  configured, otherwise `app-release-unsigned.apk` — sign before deploying.
-
-Sign locally once: create a keystore, put it outside git, and reference it
-in `keystore.properties` at the repo root (never committed):
-
-```properties
-storeFile=/absolute/path/bandmoot-release.keystore
-storePassword=…
-keyAlias=bandmoot
-keyPassword=…
-```
-
-then `gradle :app:assembleRelease`. For CI-signed builds, set the
-`ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`
-and `ANDROID_KEY_PASSWORD` repo secrets instead. Bump `versionCode` per
-release; keep the AGPL license files in place.
 
 ## License
 
