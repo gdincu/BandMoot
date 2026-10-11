@@ -87,12 +87,27 @@ class MainActivity : AppCompatActivity() {
                 log("Link service started. Start a Komoot ride.")
             }
         }
+        val muteToggle = com.google.android.material.switchmaterial.SwitchMaterial(this).apply {
+            text = "Mute band vibration (all notifications)"
+            isChecked = prefs().getBoolean(BandConnectorService.PREF_MUTE_NAV_VIB, false)
+            setOnCheckedChangeListener { _, checked ->
+                prefs().edit().putBoolean(BandConnectorService.PREF_MUTE_NAV_VIB, checked).apply()
+                log("Vibration muted = $checked (applied on next READY)")
+                val svc = Intent(this@MainActivity, BandConnectorService::class.java)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    startForegroundService(svc)
+                } else {
+                    startService(svc)
+                }
+            }
+        }
         layout.addView(status)
         layout.addView(btnListener)
         layout.addView(btnScan)
         layout.addView(authKeyInput)
         layout.addView(btnSaveKey)
         layout.addView(btnStart)
+        layout.addView(muteToggle)
         setContentView(ScrollView(this).apply { addView(layout) })
 
         // MAC seen in your Mi Fitness log (04:DA:28:1C:36:32): prefill once so the

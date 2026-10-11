@@ -613,6 +613,34 @@ class XiaomiLink(
         }
     }
 
+    fun setNotificationVibrationMuted(muted: Boolean) {
+        io.execute {
+            if (state.get() != State.READY) {
+                log("setNotificationVibrationMuted dropped: not READY (${state.get()})")
+                return@execute
+            }
+            try {
+                val preset = if (muted) 0 else 1 // 0 = none/off, 1 = default; verify on 8 Active
+                val vibType = XiaomiProto.VibrationNotificationType.newBuilder()
+                    .setNotificationType(4) // notifications
+                    .setPreset(preset)
+                    .build()
+                val cmd = XiaomiProto.Command.newBuilder()
+                    .setType(2) // System
+                    .setSubtype(39) // vibrationSetPreset
+                    .setSystem(
+                        XiaomiProto.System.newBuilder()
+                            .setVibrationSetPreset(vibType)
+                    )
+                    .build()
+                writeCommand(cmd.toByteArray(), "set notif vib muted=$muted preset=$preset")
+                log("Notification vibration preset set: muted=$muted")
+            } catch (t: Throwable) {
+                log("setNotificationVibrationMuted failed: ${t.message}")
+            }
+        }
+    }
+
     companion object {
         private const val TAG = "XiaomiLink"
         val CCCD: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
