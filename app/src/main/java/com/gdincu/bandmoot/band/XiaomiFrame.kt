@@ -5,12 +5,13 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
 /**
- * Xiaomi BLE packet framing.
+ * Xiaomi BLE packet framing, all multi-byte ints little-endian.
  *
- * Wire format (little-endian):
- * - single: `[00 00][02][enc][idx u16][payload]`, ack `[00 00 03 result]`
- * - chunked start: `[00 00][00][enc][count u16]`, ack `[00 00 01 01]`,
- *   chunks `[idx u16][bytes]`, end-ack `[00 00 01 00]`, resend `[00 00 01 05][idx...]`
+ * Single command: header 00 00 02, enc flag 1 or 2, index u16 if encrypted,
+ * then payload; band answers 00 00 03 plus a result byte.
+ * Chunked start: header 00 00 00, enc flag, count u16; band answers
+ * 00 00 01 01, then chunks of index u16 plus bytes; end-ack 00 00 01 00,
+ * resend request 00 00 01 05 plus an index list.
  */
 object XiaomiFrame {
 
