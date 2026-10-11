@@ -77,9 +77,6 @@ class BandConnectorService : Service() {
                     it.sendNav(title, detail)
                     pendingNav = null
                 }
-                // Apply vibration preference when link becomes ready
-                val prefsSvc = getSharedPreferences(PREFS, MODE_PRIVATE)
-                it.setNotificationVibrationMuted(prefsSvc.getBoolean(PREF_MUTE_NAV_VIB, false))
             }
             it.connect()
         }
@@ -98,10 +95,6 @@ class BandConnectorService : Service() {
                 onNavInstruction(turn, title, detail, distanceM)
             }
             ACTION_CLEAR_NAV -> onNavCleared()
-        }
-        val prefsSvc = getSharedPreferences(PREFS, MODE_PRIVATE)
-        if (link?.state() == XiaomiLink.State.READY) {
-            link?.setNotificationVibrationMuted(prefsSvc.getBoolean(PREF_MUTE_NAV_VIB, false))
         }
         return START_STICKY
     }
@@ -235,7 +228,6 @@ class BandConnectorService : Service() {
         const val PREFS = "bandmoot"
         const val PREF_MAC = "mac"
         const val PREF_AUTH_KEY = "authKey"
-        const val PREF_MUTE_NAV_VIB = "muteNavVibration"
 
         fun scanFilter(): ScanFilter = ScanFilter.Builder()
             .setServiceUuid(

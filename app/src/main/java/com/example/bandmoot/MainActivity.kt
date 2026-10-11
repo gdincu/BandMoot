@@ -27,7 +27,6 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var status: TextView
     private lateinit var authKeyInput: EditText
-    private lateinit var muteToggle: com.google.android.material.switchmaterial.SwitchMaterial
     private var scanning = false
 
     private val scanCallback = object : ScanCallback() {
@@ -88,28 +87,12 @@ class MainActivity : AppCompatActivity() {
                 log("Link service started. Start a Komoot ride.")
             }
         }
-        muteToggle = com.google.android.material.switchmaterial.SwitchMaterial(this).apply {
-            text = "Mute band vibration (all notifications)"
-            isChecked = prefs().getBoolean(BandConnectorService.PREF_MUTE_NAV_VIB, false)
-            isEnabled = false
-            setOnCheckedChangeListener { _, checked ->
-                prefs().edit().putBoolean(BandConnectorService.PREF_MUTE_NAV_VIB, checked).apply()
-                log("Vibration muted = $checked (applied now if linked)")
-                val svc = Intent(this@MainActivity, BandConnectorService::class.java)
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    startForegroundService(svc)
-                } else {
-                    startService(svc)
-                }
-            }
-        }
         layout.addView(status)
         layout.addView(btnListener)
         layout.addView(btnScan)
         layout.addView(authKeyInput)
         layout.addView(btnSaveKey)
         layout.addView(btnStart)
-        layout.addView(muteToggle)
         setContentView(ScrollView(this).apply { addView(layout) })
 
         // MAC seen in your Mi Fitness log (04:DA:28:1C:36:32): prefill once so the
@@ -141,10 +124,6 @@ class MainActivity : AppCompatActivity() {
             "enabled_notification_listeners",
         )?.contains(packageName) == true
         log("Listener: ${if (listenerOn) "ON" else "OFF"} | Band: ${mac ?: "none"}")
-        // Check if link is READY via service state - simplest: enable toggle if service likely ready
-        // We don't have direct link reference; enable if mac+key exist and we can try to start service
-        val key = prefs().getString(BandConnectorService.PREF_AUTH_KEY, null)
-        muteToggle.isEnabled = !mac.isNullOrBlank() && !key.isNullOrBlank()
     }
 
     private fun toggleScan() {

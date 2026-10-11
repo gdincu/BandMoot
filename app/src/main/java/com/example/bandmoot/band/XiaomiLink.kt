@@ -613,34 +613,6 @@ class XiaomiLink(
         }
     }
 
-    fun setNotificationVibrationMuted(muted: Boolean) {
-        io.execute {
-            if (state.get() != State.READY) {
-                log("setNotificationVibrationMuted dropped: not READY (${state.get()})")
-                return@execute
-            }
-            try {
-                val preset = if (muted) 0 else 1 // 0 = none/off, 1 = default; verify on 8 Active
-                val vibType = XiaomiProto.VibrationNotificationType.newBuilder()
-                    .setNotificationType(4) // notifications
-                    .setPreset(preset)
-                    .build()
-                val cmd = XiaomiProto.Command.newBuilder()
-                    .setType(SYSTEM_TYPE)
-                    .setSubtype(CMD_VIBRATION_SET_PRESET)
-                    .setSystem(
-                        XiaomiProto.System.newBuilder()
-                            .setVibrationSetPreset(vibType)
-                    )
-                    .build()
-                writeCommand(cmd.toByteArray(), "set notif vib muted=$muted preset=$preset")
-                log("Notification vibration preset set: muted=$muted")
-            } catch (t: Throwable) {
-                log("setNotificationVibrationMuted failed: ${t.message}")
-            }
-        }
-    }
-
     companion object {
         private const val TAG = "XiaomiLink"
         val CCCD: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
@@ -649,10 +621,6 @@ class XiaomiLink(
         const val CMD_NOTIF_SEND = 0
         const val CMD_NOTIF_DISMISS = 1
         const val CMD_SCREEN_ON_ON_NOTIFICATIONS_SET = 7
-        // System (type 2) subtypes, per xiaomi.proto "// 2, N" comments.
-        // vibrationSetPreset is field 39 but wire subtype 47 — 39 is "get workout types".
-        const val SYSTEM_TYPE = 2
-        const val CMD_VIBRATION_SET_PRESET = 47
         const val NAV_ID = 1001
     }
 }
