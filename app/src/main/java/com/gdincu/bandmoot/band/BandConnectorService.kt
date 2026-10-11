@@ -73,13 +73,13 @@ class BandConnectorService : Service() {
         when (intent?.action) {
             ACTION_SEND_NAV -> {
                 val turn = runCatching {
-                    TurnType.valueOf(intent.getStringExtra(EXTRA_TURN) ?: "BLANK")
+                    TurnType.valueOf(intent?.getStringExtra(EXTRA_TURN) ?: "BLANK")
                 }.getOrDefault(TurnType.BLANK)
                 onNavInstruction(
                     turn,
-                    intent.getStringExtra(EXTRA_TITLE).orEmpty(),
-                    intent.getStringExtra(EXTRA_DETAIL).orEmpty(),
-                    intent.getLongExtra(EXTRA_DISTANCE_M, -1),
+                    intent?.getStringExtra(EXTRA_TITLE).orEmpty(),
+                    intent?.getStringExtra(EXTRA_DETAIL).orEmpty(),
+                    intent?.getLongExtra(EXTRA_DISTANCE_M, -1) ?: -1,
                 )
             }
             ACTION_CLEAR_NAV -> onNavCleared()

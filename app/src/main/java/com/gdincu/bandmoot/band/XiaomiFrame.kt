@@ -8,9 +8,9 @@ import java.nio.ByteOrder
  * Xiaomi BLE packet framing.
  *
  * Wire format (little-endian):
- * - single: [00 00][02][enc: 1|2][idx u16 if enc][payload], ack [00 00 03 result]
- * - chunked start: [00 00][00][enc: 1|0][count u16], ack [00 00 01 01],
- *   chunks [idx u16][bytes], end-ack [00 00 01 00], resend [00 00 01 05][idx...]
+ * - single: `[00 00][02][enc][idx u16][payload]`, ack `[00 00 03 result]`
+ * - chunked start: `[00 00][00][enc][count u16]`, ack `[00 00 01 01]`,
+ *   chunks `[idx u16][bytes]`, end-ack `[00 00 01 00]`, resend `[00 00 01 05][idx...]`
  */
 object XiaomiFrame {
 
