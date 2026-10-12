@@ -7,8 +7,6 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.bluetooth.BluetoothManager
-import android.bluetooth.le.ScanFilter
-import android.bluetooth.le.ScanSettings
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
@@ -16,7 +14,6 @@ import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
-import android.os.ParcelUuid
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
@@ -384,17 +381,6 @@ class BandConnectorService : Service() {
                 if (activeBand?.authKey != null) prefs.edit().putString(PREF_AUTH_KEY, activeBand.authKey).apply()
             }
         }
-
-        fun scanFilter(): ScanFilter = ScanFilter.Builder()
-            .setServiceUuid(ParcelUuid(XiaomiProtocol.SERVICE_FE95))
-            .build()
-
-        fun scanSettings(): ScanSettings = ScanSettings.Builder()
-            .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
-            .build()
-
-        fun isBand8ActiveName(name: String?): Boolean =
-            name != null && XiaomiProtocol.DEVICE_NAME_REGEX.matches(name)
 
         fun bluetoothManager(ctx: Context) =
             ctx.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager

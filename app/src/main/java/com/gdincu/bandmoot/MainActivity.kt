@@ -2,6 +2,7 @@ package com.gdincu.bandmoot
 
 import android.Manifest
 import android.app.Activity
+import android.bluetooth.BluetoothAdapter
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
@@ -24,7 +25,6 @@ import com.gdincu.bandmoot.band.XiaomiProtocol
 /** MAC + AuthKey + Connect/Disconnect with collapsible logs. */
 class MainActivity : Activity() {
 
-    private lateinit var status: TextView
     private lateinit var macInput: EditText
     private lateinit var authKeyInput: EditText
     private lateinit var logView: TextView
@@ -40,12 +40,6 @@ class MainActivity : Activity() {
         val layout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(40, 40, 40, 40)
-        }
-
-        status = TextView(this).apply {
-            text = "BandMoot"
-            textSize = 14f
-            setPadding(0, 0, 0, 16)
         }
 
         val macLabel = TextView(this).apply {
@@ -128,7 +122,6 @@ class MainActivity : Activity() {
             btnToggleLogs.text = if (logsExpanded) "Hide logs ▴" else "Show logs ▾"
         }
 
-        layout.addView(status)
         layout.addView(macLabel)
         layout.addView(macInput)
         layout.addView(keyLabel)
@@ -139,6 +132,7 @@ class MainActivity : Activity() {
 
         setContentView(ScrollView(this).apply { addView(layout) })
 
+        // 1) POST_NOTIFICATIONS
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             ActivityCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) !=
             PackageManager.PERMISSION_GRANTED
@@ -150,19 +144,36 @@ class MainActivity : Activity() {
             )
         }
 
+        // 2) Nearby devices (BLE scan/connect)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+            ActivityCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_SCAN) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            ActivityCompat.requestPermissions(
+                this,
+                arrayOf(
+                    Manifest.permission.BLUETOOTH_SCAN,
+                    Manifest.permission.BLUETOOTH_CONNECT,
+                ),
+                7,
+            )
+        }
+
+        // Bluetooth enabled check
+        if (!isBluetoothEnabled()) {
+            try {
+                startActivity(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE))
+            } catch (_: Exception) {
+            }
+        }
+
+        // 3) Notification listener
         if (!isNotificationListenerEnabled()) {
             try {
                 startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
             } catch (_: Exception) {
             }
         }
-
-        refreshStatus()
-    }
-
-    override fun onResume() {
-        super.onResume()
-        refreshStatus()
     }
 
     private fun connect() {
@@ -186,13 +197,11 @@ class MainActivity : Activity() {
         val mac = BandConnectorService.normalizeMac(macRaw)
         val key = keyRaw.trim()
 
-        // Mimics former "Save auth key": validates via isValidAuthKey already, then saves
         BandConnectorService.upsertBand(prefs(), mac, null, key)
         BandConnectorService.setActiveMac(prefs(), mac)
         prefs().edit().putString(BandConnectorService.PREF_AUTH_KEY, key).apply()
         log("Auth key saved for $mac.")
 
-        // Mimics former "Start link service"
         val svc = Intent(this, BandConnectorService::class.java)
         startForegroundService(svc)
         log("Link service started for $mac. Start a Komoot ride.")
@@ -217,13 +226,14 @@ class MainActivity : Activity() {
         Settings.Secure.getString(contentResolver, "enabled_notification_listeners")
             ?.contains(packageName) == true
 
-    private fun prefs() = getSharedPreferences(BandConnectorService.PREFS, MODE_PRIVATE)
+    private fun isBluetoothEnabled(): Boolean =
+        try {
+            BandConnectorService.bluetoothManager(this).adapter?.isEnabled == true
+        } catch (_: Exception) {
+            false
+        }
 
-    private fun refreshStatus() {
-        val active = BandConnectorService.getActiveBand(prefs())
-        val label = active?.let { "${it.mac} key:${if (it.authKey != null) "set" else "missing"}" } ?: "none"
-        status.text = "BandMoot — Active: $label"
-    }
+    private fun prefs() = getSharedPreferences(BandConnectorService.PREFS, MODE_PRIVATE)
 
     private fun log(msg: String) {
         val entry = "• $msg"
