@@ -25,6 +25,9 @@ forwards each turn over the band's encrypted BLE protocol.
 5. In Komoot, during navigation: speaker icon → **Notifications** mode, and
    allow the `Navigation instructions` channel + Live updates in Android
    settings. Verify a turn card appears in the shade.
+6. Stop anytime via **5. Stop link service** or the **Stop** action on the
+   link notification — this dismisses the band card, tears down BLE, and
+   ignores further Komoot posts until you start again.
 
 ## Status
 

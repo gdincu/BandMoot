@@ -3,6 +3,7 @@ package com.gdincu.bandmoot.band
 import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import kotlin.math.ceil
 
 /**
  * Xiaomi BLE packet framing, all multi-byte ints little-endian.
@@ -61,7 +62,7 @@ object XiaomiFrame {
             .array()
 
     fun chunkCount(payloadSize: Int, maxWrite: Int): Int =
-        Math.ceil(payloadSize / (maxWrite - 2).toDouble()).toInt().coerceAtLeast(1)
+        ceil(payloadSize / (maxWrite - 2).toDouble()).toInt().coerceAtLeast(1)
 
     sealed interface Incoming {
         /** Band started a chunked transfer: [count] chunks will follow. */
@@ -133,7 +134,7 @@ object XiaomiFrame {
         private val chunks = sortedMapOf<Int, ByteArray>()
 
         /** @return complete payload once all [expected] chunks arrived, else null. */
-        fun feed(start: Incoming.ChunkedStart): Unit {
+        fun feed(start: Incoming.ChunkedStart) {
             expected = start.count
             chunks.clear()
         }

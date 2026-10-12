@@ -20,7 +20,7 @@ import com.gdincu.bandmoot.band.BandConnectorService
 import com.gdincu.bandmoot.band.XiaomiProtocol
 
 /**
- * Single-screen setup: notification access -> BLE scan -> auth key -> start link service.
+ * Single-screen setup: notification access -> BLE scan -> auth key -> start/stop link service.
  */
 class MainActivity : Activity() {
 
@@ -49,8 +49,7 @@ class MainActivity : Activity() {
         status = TextView(this).apply { text = "BandMoot setup" }
         authKeyInput = EditText(this).apply {
             hint = "32-char BLE auth key"
-            val saved = prefs().getString(BandConnectorService.PREF_AUTH_KEY, null)
-            setText(if (saved.isNullOrBlank()) DEFAULT_AUTH_KEY_CANDIDATE else saved)
+            setText(prefs().getString(BandConnectorService.PREF_AUTH_KEY, null).orEmpty())
         }
         val btnListener = Button(this).apply {
             text = "1. Enable notification access"
@@ -82,18 +81,27 @@ class MainActivity : Activity() {
                 log("Link service started. Start a Komoot ride.")
             }
         }
+        val btnStop = Button(this).apply {
+            text = "5. Stop link service"
+            setOnClickListener {
+                val svc = Intent(this@MainActivity, BandConnectorService::class.java)
+                    .setAction(BandConnectorService.ACTION_STOP)
+                try {
+                    startForegroundService(svc)
+                } catch (_: Exception) {
+                    startService(svc)
+                }
+                log("Link service stop requested.")
+            }
+        }
         layout.addView(status)
         layout.addView(btnListener)
         layout.addView(btnScan)
         layout.addView(authKeyInput)
         layout.addView(btnSaveKey)
         layout.addView(btnStart)
+        layout.addView(btnStop)
         setContentView(ScrollView(this).apply { addView(layout) })
-
-        // Prefill once so the scan step can be skipped when the band is already known.
-        if (prefs().getString(BandConnectorService.PREF_MAC, null).isNullOrBlank()) {
-            prefs().edit().putString(BandConnectorService.PREF_MAC, DEFAULT_MAC).apply()
-        }
 
         // Needed on API 33+ for the foreground-service status entry.
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
@@ -111,11 +119,17 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         val mac = prefs().getString(BandConnectorService.PREF_MAC, null)
+        val stopped = prefs().getBoolean(BandConnectorService.PREF_STOPPED, false)
         val listenerOn = Settings.Secure.getString(
             contentResolver,
             "enabled_notification_listeners",
         )?.contains(packageName) == true
-        log("Listener: ${if (listenerOn) "ON" else "OFF"} | Band: ${mac ?: "none"}")
+        log("Listener: ${if (listenerOn) "ON" else "OFF"} | Band: ${mac ?: "none"} | Link: ${if (stopped) "STOPPED" else "active"}")
+    }
+
+    override fun onDestroy() {
+        stopScan()
+        super.onDestroy()
     }
 
     private fun toggleScan() {
@@ -144,11 +158,16 @@ class MainActivity : Activity() {
         }
         scanning = true
         log("Scanning for Xiaomi Band 8 Active… (name + FE95 filter)")
-        scanner.startScan(
-            listOf(BandConnectorService.scanFilter()),
-            BandConnectorService.scanSettings(),
-            scanCallback,
-        )
+        try {
+            scanner.startScan(
+                listOf(BandConnectorService.scanFilter()),
+                BandConnectorService.scanSettings(),
+                scanCallback,
+            )
+        } catch (e: SecurityException) {
+            scanning = false
+            toast("Bluetooth permission revoked: ${e.message}")
+        }
     }
 
     private fun stopScan() {
@@ -163,7 +182,8 @@ class MainActivity : Activity() {
     private fun prefs() = getSharedPreferences(BandConnectorService.PREFS, MODE_PRIVATE)
 
     private fun log(msg: String) {
-        status.text = "${status.text}\n• $msg"
+        val lines = "${status.text}\n• $msg".lines()
+        status.text = lines.takeLast(MAX_STATUS_LINES).joinToString("\n")
     }
 
     private fun toast(msg: String) {
@@ -171,9 +191,6 @@ class MainActivity : Activity() {
     }
 
     companion object {
-        const val DEFAULT_MAC = "04:DA:28:1C:36:32"
-
-        /** 32-hex BLE auth key candidate (HMAC check decides: READY = correct). */
-        const val DEFAULT_AUTH_KEY_CANDIDATE = "21c22a78e8526957f65b412ff8a64e27"
+        private const val MAX_STATUS_LINES = 30
     }
 }

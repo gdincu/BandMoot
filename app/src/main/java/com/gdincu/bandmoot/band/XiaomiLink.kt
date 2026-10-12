@@ -219,25 +219,19 @@ class XiaomiLink(
 
         // Acks are signalled here on the binder thread: `io` may be blocked waiting
         // for them, so queueing behind `io` would deadlock. Heavy work goes to `io`.
+        // The packet is decoded once here and the result shared with `io`.
         override fun onCharacteristicChanged(
             g: BluetoothGatt,
             characteristic: BluetoothGattCharacteristic,
             value: ByteArray,
         ) {
-            signalProtocolAcks(value)
-            io.execute {
-                runCatching { onIncomingRouted(value) }.onFailure { fail("incoming: ${it.message}") }
-            }
+            onPacketReceived(value)
         }
 
         @Suppress("DEPRECATION")
         override fun onCharacteristicChanged(g: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
             val v = characteristic.value ?: return
-            signalProtocolAcks(v)
-            io.execute {
-                runCatching { onIncomingRouted(v) }
-                    .onFailure { fail("incoming: ${it.message}") }
-            }
+            onPacketReceived(v)
         }
 
         override fun onCharacteristicWrite(g: BluetoothGatt, c: BluetoothGattCharacteristic, status: Int) {
@@ -263,7 +257,7 @@ class XiaomiLink(
         g.requestMtu(512)
         mtuLatch.await(5, TimeUnit.SECONDS)
 
-        for (c in listOf(write, read, activity).filterNotNull()) {
+        for (c in listOfNotNull(write, read, activity)) {
             if (!enableNotify(g, c)) {
                 fail("notify enable failed for ${c.uuid}"); return
             }
@@ -296,8 +290,16 @@ class XiaomiLink(
         writeCommand(XiaomiCrypto.buildNonceCommand(phoneNonce).toByteArray(), "auth step 1")
     }
 
-    private fun signalProtocolAcks(value: ByteArray) {
-        when (val msg = XiaomiFrame.decode(value)) {
+    private fun onPacketReceived(value: ByteArray) {
+        val msg = XiaomiFrame.decode(value)
+        signalProtocolAcks(msg)
+        io.execute {
+            runCatching { onIncoming(msg, value) }.onFailure { fail("incoming: ${it.message}") }
+        }
+    }
+
+    private fun signalProtocolAcks(msg: XiaomiFrame.Incoming) {
+        when (msg) {
             is XiaomiFrame.Incoming.Ack -> {
                 ackResult = msg.result
                 ackLatch?.countDown()
@@ -316,20 +318,14 @@ class XiaomiLink(
         }
     }
 
-    private fun onIncomingRouted(value: ByteArray) {
-        when (XiaomiFrame.decode(value)) {
+    private fun onIncoming(msg: XiaomiFrame.Incoming, value: ByteArray) {
+        when (msg) {
             is XiaomiFrame.Incoming.Ack,
             XiaomiFrame.Incoming.ChunkAckStart,
             XiaomiFrame.Incoming.ChunkAckEnd,
             XiaomiFrame.Incoming.ChunkNack,
             is XiaomiFrame.Incoming.ChunkResend,
             -> return
-            else -> onIncoming(value)
-        }
-    }
-
-    private fun onIncoming(value: ByteArray) {
-        when (val msg = XiaomiFrame.decode(value)) {
             is XiaomiFrame.Incoming.Single -> {
                 log("rx single ${if (msg.encrypted) "enc" else "plain"} ${msg.payload.size}B")
                 sendRaw(XiaomiFrame.PAYLOAD_ACK, "ack")

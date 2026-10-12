@@ -20,7 +20,7 @@ class KomootListenerService : NotificationListenerService() {
         if (!KomootParser.isKomootNavigation(sbn)) return
         activeNavigationKey = sbn.key
         val instruction = KomootParser.parse(sbn) ?: return
-        forward(instruction, remove = false)
+        forward(instruction)
     }
 
     override fun onNotificationRemoved(sbn: StatusBarNotification) {
@@ -28,7 +28,7 @@ class KomootListenerService : NotificationListenerService() {
         if (sbn.key != activeNavigationKey) return
         activeNavigationKey = null
         Log.i(TAG, "Active Komoot navigation notification removed; clearing band")
-        forward(null, remove = true)
+        forward(null)
     }
 
     override fun onListenerDisconnected() {
@@ -36,9 +36,9 @@ class KomootListenerService : NotificationListenerService() {
         requestRebind(ComponentName(this, KomootListenerService::class.java))
     }
 
-    private fun forward(instruction: TurnInstruction?, remove: Boolean) {
+    private fun forward(instruction: TurnInstruction?) {
         val intent = Intent(this, BandConnectorService::class.java).apply {
-            action = if (remove) {
+            action = if (instruction == null) {
                 BandConnectorService.ACTION_CLEAR_NAV
             } else {
                 BandConnectorService.ACTION_SEND_NAV
@@ -50,7 +50,11 @@ class KomootListenerService : NotificationListenerService() {
                 putExtra(BandConnectorService.EXTRA_DISTANCE_M, it.distanceMeters)
             }
         }
-        startForegroundService(intent)
+        try {
+            startForegroundService(intent)
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not start link service: ${e.message}")
+        }
     }
 
     companion object {

@@ -37,24 +37,39 @@ class BandConnectorService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    private fun prefs() = getSharedPreferences(PREFS, MODE_PRIVATE)
+
     override fun onCreate() {
         super.onCreate()
+        if (isStoppedByUser()) {
+            startAsForeground("BandMoot", "Link stopped — tap Start in the app to reconnect.")
+            return
+        }
         startAsForeground()
         ensureLink()
     }
 
+    private fun isStoppedByUser(): Boolean = prefs().getBoolean(PREF_STOPPED, false)
+
+    private fun setStoppedByUser(stopped: Boolean) {
+        prefs().edit().putBoolean(PREF_STOPPED, stopped).apply()
+    }
+
     private fun ensureLink() {
-        val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
-        val mac = prefs.getString(PREF_MAC, null)
-        val key = prefs.getString(PREF_AUTH_KEY, null)
-        if (mac.isNullOrBlank() || !XiaomiProtocol.isValidAuthKey(key ?: "")) {
+        if (isStoppedByUser()) {
+            updateForeground("BandMoot", "Link stopped — tap Start in the app to reconnect.")
+            return
+        }
+        val mac = prefs().getString(PREF_MAC, null)
+        val key = prefs().getString(PREF_AUTH_KEY, null).orEmpty().trim()
+        if (mac.isNullOrBlank() || !XiaomiProtocol.isValidAuthKey(key)) {
             updateForeground("BandMoot", "Missing band MAC or auth key — open the app.")
             return
         }
         val s = link?.state()
         if (s == XiaomiLink.State.READY || s == XiaomiLink.State.CONNECTING || s == XiaomiLink.State.AUTH) return
         updateForeground("BandMoot", "Connecting to $mac …")
-        XiaomiLink(this, mac, key!!.trim()) { msg ->
+        XiaomiLink(this, mac, key) { msg ->
             updateForeground("BandMoot", msg.take(120))
         }.also {
             link = it
@@ -69,22 +84,41 @@ class BandConnectorService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        ensureLink()
-        when (intent?.action) {
-            ACTION_SEND_NAV -> {
-                val turn = runCatching {
-                    TurnType.valueOf(intent?.getStringExtra(EXTRA_TURN) ?: "BLANK")
-                }.getOrDefault(TurnType.BLANK)
-                onNavInstruction(
-                    turn,
-                    intent?.getStringExtra(EXTRA_TITLE).orEmpty(),
-                    intent?.getStringExtra(EXTRA_DETAIL).orEmpty(),
-                    intent?.getLongExtra(EXTRA_DISTANCE_M, -1) ?: -1,
-                )
+        when (val action = intent?.action) {
+            ACTION_STOP -> {
+                stopLinkAndSelf()
+                return START_NOT_STICKY
             }
-            ACTION_CLEAR_NAV -> onNavCleared()
+            ACTION_SEND_NAV, ACTION_CLEAR_NAV -> {
+                if (isStoppedByUser()) {
+                    Log.i(TAG, "Ignoring $action: link stopped by user")
+                    stopSelf()
+                    return START_NOT_STICKY
+                }
+                ensureLink()
+                val i = intent ?: return START_STICKY
+                if (action == ACTION_SEND_NAV) {
+                    val turn = runCatching {
+                        TurnType.valueOf(i.getStringExtra(EXTRA_TURN) ?: "BLANK")
+                    }.getOrDefault(TurnType.BLANK)
+                    onNavInstruction(
+                        turn,
+                        i.getStringExtra(EXTRA_TITLE).orEmpty(),
+                        i.getStringExtra(EXTRA_DETAIL).orEmpty(),
+                        i.getLongExtra(EXTRA_DISTANCE_M, -1),
+                    )
+                } else {
+                    onNavCleared()
+                }
+                return START_STICKY
+            }
+            else -> {
+                // Explicit user start (MainActivity, no action): clear the stopped flag.
+                if (isStoppedByUser()) setStoppedByUser(false)
+                ensureLink()
+                return START_STICKY
+            }
         }
-        return START_STICKY
     }
 
     private fun onNavInstruction(turn: TurnType, title: String, detail: String, distanceM: Long) {
@@ -147,19 +181,46 @@ class BandConnectorService : Service() {
     }
 
     private fun onNavCleared() {
+        resetNavState()
+        link?.clearNav()
+        updateForeground("BandMoot", "Waiting for Komoot navigation…")
+    }
+
+    private fun resetNavState() {
         lastKey = null
         lastTurn = null
         lastDistanceM = -1
         lastTitleStripped = null
         lastDetailStripped = null
         pendingNav = null
+    }
+
+    /** User-initiated stop: dismiss the band card, tear down BLE, remove FGS notification. */
+    private fun stopLinkAndSelf() {
+        Log.i(TAG, "Stop requested: tearing down link")
+        setStoppedByUser(true)
+        resetNavState()
         link?.clearNav()
-        updateForeground("BandMoot", "Waiting for Komoot navigation…")
+        link?.disconnect()
+        link = null
+        try {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+        } catch (_: Exception) {
+        }
+        try {
+            getSystemService(NotificationManager::class.java).cancel(NOTIF_ID)
+        } catch (_: Exception) {
+        }
+        stopSelf()
     }
 
     override fun onDestroy() {
         link?.disconnect()
         link = null
+        try {
+            getSystemService(NotificationManager::class.java).cancel(NOTIF_ID)
+        } catch (_: Exception) {
+        }
         super.onDestroy()
     }
 
@@ -167,18 +228,22 @@ class BandConnectorService : Service() {
         private const val TAG = "BandConnectorService"
         const val ACTION_SEND_NAV = "com.gdincu.bandmoot.SEND_NAV"
         const val ACTION_CLEAR_NAV = "com.gdincu.bandmoot.CLEAR_NAV"
+        const val ACTION_STOP = "com.gdincu.bandmoot.STOP"
         const val EXTRA_TURN = "turn"
         const val EXTRA_TITLE = "title"
         const val EXTRA_DETAIL = "detail"
         const val EXTRA_DISTANCE_M = "distanceM"
 
-        const val DEDUP_WINDOW_MS = 3000L
-        const val STATUS_DEDUP_WINDOW_MS = 8000L
-        val DISTANCE_THRESHOLDS_M = listOf(0L, 20L, 50L, 100L, 200L, 500L, 1000L, 2000L, 5000L)
+        private const val DEDUP_WINDOW_MS = 3000L
+        private const val STATUS_DEDUP_WINDOW_MS = 8000L
+        private val DISTANCE_THRESHOLDS_M = listOf(0L, 20L, 50L, 100L, 200L, 500L, 1000L, 2000L, 5000L)
         private val STREET_TRIM_CHARS = charArrayOf(' ', '•', '·', '-', '–', '|', ',')
+        private val DISTANCE_STRIP_RE =
+            Regex("[0-9]+[.,]?[0-9]*\\s*(m|km|mi|ft|yd)\\b\\s*[•·\\-–|]?\\s*", RegexOption.IGNORE_CASE)
         const val PREFS = "bandmoot"
         const val PREF_MAC = "mac"
         const val PREF_AUTH_KEY = "authKey"
+        const val PREF_STOPPED = "stopped"
 
         fun scanFilter(): ScanFilter = ScanFilter.Builder()
             .setServiceUuid(ParcelUuid(XiaomiProtocol.SERVICE_FE95))
@@ -194,8 +259,8 @@ class BandConnectorService : Service() {
         fun bluetoothManager(ctx: Context) =
             ctx.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
 
-        const val CHANNEL_ID = "band_link"
-        const val NOTIF_ID = 41
+        private const val CHANNEL_ID = "band_link"
+        private const val NOTIF_ID = 41
     }
 
     private fun formatDistanceLabel(distanceM: Long): String? = when {
@@ -211,10 +276,7 @@ class BandConnectorService : Service() {
     }
 
     private fun String.withoutDistances(): String =
-        replace(
-            Regex("[0-9]+[.,]?[0-9]*\\s*(m|km|mi|ft|yd)\\b\\s*[•·\\-–|]?\\s*", RegexOption.IGNORE_CASE),
-            "",
-        ).trim()
+        DISTANCE_STRIP_RE.replace(this, "").trim()
 
     private fun crossedThreshold(prev: Long, cur: Long): Boolean {
         if (prev <= cur) return false
@@ -228,21 +290,31 @@ class BandConnectorService : Service() {
             Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
+        val stopPi = PendingIntent.getService(
+            this,
+            1,
+            Intent(this, BandConnectorService::class.java).setAction(ACTION_STOP),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle(title)
             .setContentText(text)
             .setSmallIcon(android.R.drawable.ic_dialog_map)
             .setContentIntent(pi)
             .setOngoing(true)
+            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Stop", stopPi)
             .build()
     }
 
-    private fun startAsForeground() {
+    private fun startAsForeground(
+        title: String = "BandMoot",
+        text: String = "Waiting for Komoot navigation…",
+    ) {
         val mgr = getSystemService(NotificationManager::class.java)
         mgr.createNotificationChannel(
             NotificationChannel(CHANNEL_ID, "Band link", NotificationManager.IMPORTANCE_LOW),
         )
-        val notif = buildNotification("BandMoot", "Waiting for Komoot navigation…")
+        val notif = buildNotification(title, text)
         // connectedDevice needs BT permissions which may not be granted yet; fall back instead of crashing.
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
