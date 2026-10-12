@@ -9,7 +9,7 @@ Upstream: https://codeberg.org/Freeyourgadget/Gadgetbridge
 
 ## Libraries (dependencies, not shipped as source)
 
-- androidx.core / appcompat — Apache-2.0
+- androidx.core — Apache-2.0
 - protobuf-javalite + protoc — BSD-3-Clause
 - Bouncy Castle bcprov-jdk18on — MIT-style BC licence
 - Gradle, Android Gradle Plugin, Kotlin — Apache-2.0

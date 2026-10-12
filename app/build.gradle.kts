@@ -25,6 +25,9 @@ android {
         targetSdk = 34
         versionCode = 1
         versionName = "0.1.0"
+
+        // Only English strings exist; strip other locales pulled in by libraries.
+        resourceConfigurations += listOf("en")
     }
 
     signingConfigs {
@@ -41,13 +44,35 @@ android {
         }
     }
 
+    buildFeatures {
+        // No BuildConfig usage in code; skip generating it.
+        buildConfig = false
+    }
+
     buildTypes {
         release {
-            isMinifyEnabled = false
+            // R8: strips unused code (incl. most of BouncyCastle/Kotlin/protobuf)
+            // + shrinkResources removes unused resources.
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro",
+            )
             if (hasReleaseSigning) {
                 signingConfig = signingConfigs.getByName("release")
             }
             // Without keys this builds app-release-unsigned.apk; sign it before deploying.
+        }
+    }
+    packaging {
+        resources {
+            excludes += setOf(
+                "META-INF/DEPENDENCIES",
+                "META-INF/LICENSE*",
+                "META-INF/NOTICE*",
+                "META-INF/*.kotlin_module",
+            )
         }
     }
     compileOptions {
@@ -61,7 +86,6 @@ android {
 
 dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
-    implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("com.google.protobuf:protobuf-javalite:4.29.1")
     implementation("org.bouncycastle:bcprov-jdk18on:1.78.1")
 }

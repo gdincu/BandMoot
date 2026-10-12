@@ -1,5 +1,6 @@
 package com.gdincu.bandmoot
 
+import android.app.Activity
 import android.Manifest
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanResult
@@ -14,7 +15,6 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
-import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import com.gdincu.bandmoot.band.BandConnectorService
 import com.gdincu.bandmoot.band.XiaomiProtocol
@@ -22,7 +22,7 @@ import com.gdincu.bandmoot.band.XiaomiProtocol
 /**
  * Single-screen setup: notification access -> BLE scan -> auth key -> start link service.
  */
-class MainActivity : AppCompatActivity() {
+class MainActivity : Activity() {
 
     private lateinit var status: TextView
     private lateinit var authKeyInput: EditText
