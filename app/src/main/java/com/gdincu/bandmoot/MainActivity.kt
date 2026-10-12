@@ -144,19 +144,20 @@ class MainActivity : Activity() {
             )
         }
 
-        // 2) Nearby devices (BLE scan/connect)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
-            ActivityCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_SCAN) !=
-            PackageManager.PERMISSION_GRANTED
-        ) {
-            ActivityCompat.requestPermissions(
-                this,
-                arrayOf(
-                    Manifest.permission.BLUETOOTH_SCAN,
-                    Manifest.permission.BLUETOOTH_CONNECT,
-                ),
-                7,
-            )
+        // 2) Nearby devices (BLE scan/connect) — need both SCAN and CONNECT on S+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val needsScan = ActivityCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED
+            val needsConnect = ActivityCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED
+            if (needsScan || needsConnect) {
+                ActivityCompat.requestPermissions(
+                    this,
+                    arrayOf(
+                        Manifest.permission.BLUETOOTH_SCAN,
+                        Manifest.permission.BLUETOOTH_CONNECT,
+                    ),
+                    7,
+                )
+            }
         }
 
         // Bluetooth enabled check
@@ -177,6 +178,22 @@ class MainActivity : Activity() {
     }
 
     private fun connect() {
+        // Ensure Nearby-devices permission before BLE connect (otherwise XiaomiLink fails with BLUETOOTH_CONNECT)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val needsScan = ActivityCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED
+            val needsConnect = ActivityCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED
+            if (needsScan || needsConnect) {
+                ActivityCompat.requestPermissions(
+                    this,
+                    arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT),
+                    7,
+                )
+                toast("Nearby devices permission required — allow and tap Connect again")
+                log("Nearby devices permission missing — requested")
+                return
+            }
+        }
+
         val macRaw = macInput.text.toString().trim()
         val keyRaw = authKeyInput.text.toString().trim()
 
