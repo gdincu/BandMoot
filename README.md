@@ -4,6 +4,9 @@ Komoot turn-by-turn navigation on the Xiaomi Smart Band 8 Active: an Android
 notification listener parses Komoot's live-navigation notification and
 forwards each turn over the band's encrypted BLE protocol.
 
+<img width="270" height="240" alt="image" src="https://github.com/user-attachments/assets/f8cf4e7d-183c-4867-9de0-69e076fc72c6" />
+
+
 ## How it works
 
 1. `KomootListenerService` (notification listener, Komoot only) receives every
@@ -17,17 +20,15 @@ forwards each turn over the band's encrypted BLE protocol.
 
 ## Setup
 
-1. Install the app.
-2. Grant notification access, then scan for `Xiaomi Band 8 Active …` and save it.
-3. Save the 32-hex-char BLE auth key (from Mi Fitness logs / freemyband-style
-   tooling; the link's HMAC check reports a wrong key as auth failure).
-4. Start the link service.
-5. In Komoot, during navigation: speaker icon → **Notifications** mode, and
+1. Install the app provide all required permissions.
+2. Enter valid **MAC** (`AA:BB:CC:DD:EE:FF`) and **AuthKey**
+   (`32 hex chars`, `0x`-prefix allowed) values.
+3. Tap **Connect**.
+4. In Komoot during navigation: speaker icon → **Notifications** mode, and
    allow the `Navigation instructions` channel + Live updates in Android
    settings. Verify a turn card appears in the shade.
-6. Stop anytime via **5. Stop link service** or the **Stop** action on the
-   link notification — this dismisses the band card, tears down BLE, and
-   ignores further Komoot posts until you start again.
+5. Stop anytime via **Disconnect** or the **Stop** action
+   on the link notification.
 
 ## Status
 
