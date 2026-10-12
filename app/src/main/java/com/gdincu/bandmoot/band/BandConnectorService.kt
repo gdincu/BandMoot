@@ -11,6 +11,7 @@ import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanSettings
 import android.content.Context
 import android.content.Intent
+import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.os.Build
@@ -22,6 +23,8 @@ import androidx.core.content.ContextCompat
 import com.gdincu.bandmoot.MainActivity
 import com.gdincu.bandmoot.nav.TurnType
 import java.util.Locale
+import org.json.JSONArray
+import org.json.JSONObject
 
 /** Foreground service owning the BLE link to the paired 8 Active. */
 class BandConnectorService : Service() {
@@ -41,6 +44,7 @@ class BandConnectorService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        ensureDefaultsAndMigration(prefs())
         if (isStoppedByUser()) {
             startAsForeground("BandMoot", "Link stopped — tap Start in the app to reconnect.")
             return
@@ -60,10 +64,14 @@ class BandConnectorService : Service() {
             updateForeground("BandMoot", "Link stopped — tap Start in the app to reconnect.")
             return
         }
-        val mac = prefs().getString(PREF_MAC, null)
-        val key = prefs().getString(PREF_AUTH_KEY, null).orEmpty().trim()
+        ensureDefaultsAndMigration(prefs())
+        val band = getActiveBand(prefs())
+        val mac = band?.mac
+        val key = band?.authKey.orEmpty().trim()
         if (mac.isNullOrBlank() || !XiaomiProtocol.isValidAuthKey(key)) {
-            updateForeground("BandMoot", "Missing band MAC or auth key — open the app.")
+            val hint = if (mac.isNullOrBlank()) "No band selected — scan or pick a paired band."
+            else "Missing/invalid auth key for $mac — save the key for the active band."
+            updateForeground("BandMoot", "$hint Open the app.")
             return
         }
         val s = link?.state()
@@ -241,9 +249,141 @@ class BandConnectorService : Service() {
         private val DISTANCE_STRIP_RE =
             Regex("[0-9]+[.,]?[0-9]*\\s*(m|km|mi|ft|yd)\\b\\s*[•·\\-–|]?\\s*", RegexOption.IGNORE_CASE)
         const val PREFS = "bandmoot"
-        const val PREF_MAC = "mac"
-        const val PREF_AUTH_KEY = "authKey"
+        const val PREF_MAC = "mac" // legacy, for migration only
+        const val PREF_AUTH_KEY = "authKey" // legacy, for migration only
         const val PREF_STOPPED = "stopped"
+        const val PREF_BANDS = "bands"
+        const val PREF_ACTIVE_MAC = "activeMac"
+
+        const val DEFAULT_MAC = "04:DA:28:1C:36:32"
+        const val DEFAULT_AUTH_KEY_CANDIDATE = "21c22a78e8526957f65b412ff8a64e27"
+        private const val DEFAULT_BAND_NAME = "Xiaomi Band 8 Active"
+
+        data class Band(val mac: String, val name: String?, val authKey: String?)
+
+        fun normalizeMac(mac: String): String = mac.trim().uppercase(Locale.ROOT)
+
+        fun getBands(prefs: SharedPreferences): List<Band> {
+            val raw = prefs.getString(PREF_BANDS, null) ?: return emptyList()
+            if (raw.isBlank()) return emptyList()
+            return try {
+                val arr = JSONArray(raw)
+                (0 until arr.length()).mapNotNull { i ->
+                    val o = arr.getJSONObject(i)
+                    val mac = o.optString("mac", "").trim()
+                    if (mac.isBlank()) return@mapNotNull null
+                    Band(
+                        mac = normalizeMac(mac),
+                        name = o.optString("name", null)?.takeIf { it.isNotBlank() },
+                        authKey = o.optString("authKey", null)?.takeIf { it.isNotBlank() },
+                    )
+                }
+            } catch (_: Exception) {
+                emptyList()
+            }
+        }
+
+        private fun saveBands(prefs: SharedPreferences, bands: List<Band>) {
+            val arr = JSONArray()
+            for (b in bands) {
+                val o = JSONObject()
+                o.put("mac", normalizeMac(b.mac))
+                if (!b.name.isNullOrBlank()) o.put("name", b.name)
+                if (!b.authKey.isNullOrBlank()) o.put("authKey", b.authKey.trim())
+                arr.put(o)
+            }
+            prefs.edit().putString(PREF_BANDS, arr.toString()).apply()
+        }
+
+        fun getActiveMac(prefs: SharedPreferences): String? =
+            prefs.getString(PREF_ACTIVE_MAC, null)?.trim()?.takeIf { it.isNotBlank() }?.let { normalizeMac(it) }
+
+        fun getActiveBand(prefs: SharedPreferences): Band? {
+            val bands = getBands(prefs)
+            if (bands.isEmpty()) return null
+            val active = getActiveMac(prefs) ?: return bands.firstOrNull()
+            return bands.find { normalizeMac(it.mac) == active } ?: bands.firstOrNull()
+        }
+
+        fun setActiveMac(prefs: SharedPreferences, mac: String) {
+            val norm = normalizeMac(mac)
+            prefs.edit().putString(PREF_ACTIVE_MAC, norm).putString(PREF_MAC, norm).apply()
+        }
+
+        fun upsertBand(prefs: SharedPreferences, mac: String, name: String?, authKey: String?) {
+            val norm = normalizeMac(mac)
+            val bands = getBands(prefs).toMutableList()
+            val idx = bands.indexOfFirst { normalizeMac(it.mac) == norm }
+            if (idx >= 0) {
+                val cur = bands[idx]
+                bands[idx] = cur.copy(
+                    name = name?.takeIf { it.isNotBlank() } ?: cur.name,
+                    authKey = authKey?.takeIf { it.isNotBlank() } ?: cur.authKey,
+                )
+            } else {
+                bands.add(Band(mac = norm, name = name?.takeIf { it.isNotBlank() }, authKey = authKey?.takeIf { it.isNotBlank() }))
+            }
+            saveBands(prefs, bands)
+            val active = getActiveMac(prefs)
+            if (active == null || active == norm) {
+                setActiveMac(prefs, norm)
+                if (!authKey.isNullOrBlank()) prefs.edit().putString(PREF_AUTH_KEY, authKey.trim()).apply()
+            }
+        }
+
+        fun updateBandKey(prefs: SharedPreferences, mac: String, authKey: String) {
+            upsertBand(prefs, mac, null, authKey)
+        }
+
+        fun removeBand(prefs: SharedPreferences, mac: String) {
+            val norm = normalizeMac(mac)
+            val bands = getBands(prefs).filterNot { normalizeMac(it.mac) == norm }
+            saveBands(prefs, bands)
+            if (getActiveMac(prefs) == norm) {
+                val next = bands.firstOrNull()?.mac
+                if (next != null) setActiveMac(prefs, next)
+                else prefs.edit().remove(PREF_ACTIVE_MAC).remove(PREF_MAC).apply()
+            }
+        }
+
+        fun ensureDefaultsAndMigration(prefs: SharedPreferences) {
+            var bands = getBands(prefs)
+            var dirty = false
+
+            if (bands.isEmpty()) {
+                val legacyMac = prefs.getString(PREF_MAC, null)?.trim()?.takeIf { it.isNotBlank() }
+                val legacyKey = prefs.getString(PREF_AUTH_KEY, null)?.trim()?.takeIf { it.isNotBlank() }
+                if (legacyMac != null) {
+                    bands = bands + Band(mac = normalizeMac(legacyMac), name = null, authKey = legacyKey)
+                    dirty = true
+                }
+            }
+            if (bands.none { normalizeMac(it.mac) == normalizeMac(DEFAULT_MAC) }) {
+                bands = bands + Band(mac = normalizeMac(DEFAULT_MAC), name = DEFAULT_BAND_NAME, authKey = DEFAULT_AUTH_KEY_CANDIDATE)
+                dirty = true
+            } else {
+                bands = bands.map { b ->
+                    if (normalizeMac(b.mac) == normalizeMac(DEFAULT_MAC)) {
+                        val fixed = b.copy(
+                            name = b.name ?: DEFAULT_BAND_NAME,
+                            authKey = b.authKey?.takeIf { it.isNotBlank() } ?: DEFAULT_AUTH_KEY_CANDIDATE,
+                        )
+                        if (fixed != b) dirty = true
+                        fixed
+                    } else b
+                }
+            }
+            if (dirty) saveBands(prefs, bands)
+
+            val active = getActiveMac(prefs)
+            val activeExists = active != null && bands.any { normalizeMac(it.mac) == active }
+            if (!activeExists) {
+                val fallback = bands.firstOrNull()?.mac ?: normalizeMac(DEFAULT_MAC)
+                prefs.edit().putString(PREF_ACTIVE_MAC, fallback).putString(PREF_MAC, fallback).apply()
+                val activeBand = bands.find { normalizeMac(it.mac) == fallback }
+                if (activeBand?.authKey != null) prefs.edit().putString(PREF_AUTH_KEY, activeBand.authKey).apply()
+            }
+        }
 
         fun scanFilter(): ScanFilter = ScanFilter.Builder()
             .setServiceUuid(ParcelUuid(XiaomiProtocol.SERVICE_FE95))
