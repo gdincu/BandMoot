@@ -42,7 +42,7 @@ class MainActivity : Activity() {
 
     private val scanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
-            val name = result.device.name ?: return
+            val name = result.scanRecord?.deviceName ?: result.device.name ?: return
             if (!BandConnectorService.isBand8ActiveName(name)) return
             val mac = result.device.address ?: return
             val norm = BandConnectorService.normalizeMac(mac)
@@ -79,7 +79,7 @@ class MainActivity : Activity() {
         }
 
         val pairedTitle = TextView(this).apply {
-            text = "Paired bands (tap ● to activate)"
+            text = "Paired bands:"
             setPadding(0, 24, 0, 8)
             textSize = 15f
         }
@@ -202,8 +202,7 @@ class MainActivity : Activity() {
                     }
                 }
                 val label = TextView(this).apply {
-                    val keyState = if (band.authKey != null && XiaomiProtocol.isValidAuthKey(band.authKey)) "key ✓" else "key ✗"
-                    text = "${band.name ?: "Band"}  ${band.mac}  $keyState"
+                    text = "${band.name ?: "Band"}  ${band.mac}"
                     textSize = 12f
                     setPadding(12, 0, 12, 0)
                     layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
@@ -312,10 +311,10 @@ class MainActivity : Activity() {
         discovered.clear()
         scanning = true
         btnScan.text = "Scanning… 0 found (tap to stop)"
-        log("Scanning for Xiaomi Band 8 Active… (FE95 filter, 12s)")
+        log("Scanning for Xiaomi Band 8 Active… (12s)")
         try {
             scanner.startScan(
-                listOf(BandConnectorService.scanFilter()),
+                null,
                 BandConnectorService.scanSettings(),
                 scanCallback,
             )
