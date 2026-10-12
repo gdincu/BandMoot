@@ -1,8 +1,11 @@
 package com.gdincu.bandmoot
 
+import android.Manifest
 import android.app.Activity
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.Color
+import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.text.InputType
@@ -14,6 +17,7 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import androidx.core.app.ActivityCompat
 import com.gdincu.bandmoot.band.BandConnectorService
 import com.gdincu.bandmoot.band.XiaomiProtocol
 
@@ -42,16 +46,6 @@ class MainActivity : Activity() {
             text = "BandMoot"
             textSize = 14f
             setPadding(0, 0, 0, 16)
-        }
-
-        val btnNotifications = Button(this).apply {
-            text = "Enable notification access"
-            textSize = 18f
-            setPadding(0, 32, 0, 32)
-            minimumHeight = 140
-            setOnClickListener {
-                startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
-            }
         }
 
         val macLabel = TextView(this).apply {
@@ -135,7 +129,6 @@ class MainActivity : Activity() {
         }
 
         layout.addView(status)
-        layout.addView(btnNotifications)
         layout.addView(macLabel)
         layout.addView(macInput)
         layout.addView(keyLabel)
@@ -145,6 +138,24 @@ class MainActivity : Activity() {
         layout.addView(logContainer)
 
         setContentView(ScrollView(this).apply { addView(layout) })
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ActivityCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            ActivityCompat.requestPermissions(
+                this,
+                arrayOf(Manifest.permission.POST_NOTIFICATIONS),
+                8,
+            )
+        }
+
+        if (!isNotificationListenerEnabled()) {
+            try {
+                startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
+            } catch (_: Exception) {
+            }
+        }
 
         refreshStatus()
     }
@@ -173,16 +184,18 @@ class MainActivity : Activity() {
         authKeyInput.error = null
 
         val mac = BandConnectorService.normalizeMac(macRaw)
-        val key = keyRaw.lowercase().trim()
+        val key = keyRaw.trim()
 
+        // Mimics former "Save auth key": validates via isValidAuthKey already, then saves
         BandConnectorService.upsertBand(prefs(), mac, null, key)
         BandConnectorService.setActiveMac(prefs(), mac)
         prefs().edit().putString(BandConnectorService.PREF_AUTH_KEY, key).apply()
+        log("Auth key saved for $mac.")
 
-        log("Saved $mac — connecting…")
+        // Mimics former "Start link service"
         val svc = Intent(this, BandConnectorService::class.java)
         startForegroundService(svc)
-        log("Connect sent for $mac. Check notification for status.")
+        log("Link service started for $mac. Start a Komoot ride.")
     }
 
     private fun disconnect() {
@@ -200,15 +213,16 @@ class MainActivity : Activity() {
     private fun isValidMac(mac: String): Boolean =
         mac.matches(Regex("^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$"))
 
+    private fun isNotificationListenerEnabled(): Boolean =
+        Settings.Secure.getString(contentResolver, "enabled_notification_listeners")
+            ?.contains(packageName) == true
+
     private fun prefs() = getSharedPreferences(BandConnectorService.PREFS, MODE_PRIVATE)
 
     private fun refreshStatus() {
         val active = BandConnectorService.getActiveBand(prefs())
         val label = active?.let { "${it.mac} key:${if (it.authKey != null) "set" else "missing"}" } ?: "none"
-        val base = "BandMoot — Active: $label"
-        status.text = if (logLines.isEmpty()) base else base + "\n" + logLines.takeLast(1).joinToString("")
-        // keep status separate from logView; re-render logView if needed
-        if (logLines.isNotEmpty()) logView.text = logLines.joinToString("\n")
+        status.text = "BandMoot — Active: $label"
     }
 
     private fun log(msg: String) {
@@ -216,10 +230,6 @@ class MainActivity : Activity() {
         logLines.add(entry)
         if (logLines.size > 50) logLines.removeAt(0)
         logView.text = logLines.joinToString("\n")
-        // also show last line in status area for quick glance
-        val active = BandConnectorService.getActiveBand(prefs())
-        val label = active?.let { "${it.mac} key:${if (it.authKey != null) "set" else "missing"}" } ?: "none"
-        status.text = "BandMoot — Active: $label\n$entry"
     }
 
     private fun toast(msg: String) {
