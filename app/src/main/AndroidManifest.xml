@@ -41,7 +41,7 @@
         <service
             android:name=".band.BandConnectorService"
             android:foregroundServiceType="connectedDevice|specialUse"
-            android:exported="false">
+            android:exported="true">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="bandmoot_bluetooth_link" />
