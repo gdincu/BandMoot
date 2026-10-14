@@ -17,6 +17,7 @@ import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
+import com.gdincu.bandmoot.LogStore
 import com.gdincu.bandmoot.MainActivity
 import com.gdincu.bandmoot.nav.TurnType
 import java.util.Locale
@@ -441,6 +442,7 @@ class BandConnectorService : Service() {
             NotificationChannel(CHANNEL_ID, "Band link", NotificationManager.IMPORTANCE_LOW),
         )
         val notif = buildNotification(title, text)
+        LogStore.addNotification(title, text)
         // connectedDevice needs BT permissions which may not be granted yet; fall back instead of crashing.
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -485,6 +487,7 @@ class BandConnectorService : Service() {
     }
 
     private fun updateForeground(title: String, text: String) {
+        LogStore.addNotification(title, text)
         getSystemService(NotificationManager::class.java).notify(NOTIF_ID, buildNotification(title, text))
     }
 }

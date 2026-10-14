@@ -30,7 +30,7 @@ class MainActivity : Activity() {
     private lateinit var logView: TextView
     private lateinit var logContainer: LinearLayout
     private var logsExpanded = false
-    private val logLines = mutableListOf<String>()
+    private val logListener: () -> Unit = { runOnUiThread { renderLogs() } }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -253,10 +253,25 @@ class MainActivity : Activity() {
     private fun prefs() = getSharedPreferences(BandConnectorService.PREFS, MODE_PRIVATE)
 
     private fun log(msg: String) {
-        val entry = "• $msg"
-        logLines.add(entry)
-        if (logLines.size > 50) logLines.removeAt(0)
-        logView.text = logLines.joinToString("\n")
+        LogStore.add(msg)
+        renderLogs()
+    }
+
+    private fun renderLogs() {
+        if (::logView.isInitialized) {
+            logView.text = LogStore.snapshot().joinToString("\n")
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        renderLogs()
+        LogStore.addListener(logListener)
+    }
+
+    override fun onPause() {
+        LogStore.removeListener(logListener)
+        super.onPause()
     }
 
     private fun toast(msg: String) {
