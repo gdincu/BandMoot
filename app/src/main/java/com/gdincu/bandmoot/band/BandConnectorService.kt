@@ -189,7 +189,7 @@ class BandConnectorService : Service() {
     private fun onNavCleared() {
         resetNavState()
         link?.clearNav()
-        updateForeground("BandMoot", "Waiting for Komoot navigation…")
+        updateForeground("BandMoot", "Waiting for navigation…")
     }
 
     private fun resetNavState() {
@@ -435,7 +435,7 @@ class BandConnectorService : Service() {
 
     private fun startAsForeground(
         title: String = "BandMoot",
-        text: String = "Waiting for Komoot navigation…",
+        text: String = "Waiting for navigation…",
     ) {
         val mgr = getSystemService(NotificationManager::class.java)
         mgr.createNotificationChannel(

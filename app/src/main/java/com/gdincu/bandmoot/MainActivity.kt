@@ -221,7 +221,7 @@ class MainActivity : Activity() {
 
         val svc = Intent(this, BandConnectorService::class.java)
         startForegroundService(svc)
-        log("Link service started for $mac. Start a Komoot ride.")
+        log("Link service started for $mac. Start navigation in Komoot or Google Maps.")
     }
 
     private fun disconnect() {

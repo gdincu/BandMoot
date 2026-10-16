@@ -8,26 +8,43 @@ import android.util.Log
 import com.gdincu.bandmoot.band.BandConnectorService
 
 /**
- * Komoot-only listener: parses navigation posts and forwards them to
- * [BandConnectorService]. Enable via notification access settings.
+ * Navigation listener: parses turn-by-turn posts from Komoot and Google Maps
+ * and forwards them to [BandConnectorService]. Enable via notification access
+ * settings.
+ *
+ * Class name is kept (Komoot-only origins) so existing notification-access
+ * grants — which are stored per component name — keep working after the
+ * Maps addition.
  */
 class KomootListenerService : NotificationListenerService() {
 
     private var activeNavigationKey: String? = null
+    private var activePackage: String? = null
 
     override fun onNotificationPosted(sbn: StatusBarNotification) {
-        if (sbn.packageName != KomootParser.KOMOOT_PACKAGE) return
-        if (!KomootParser.isKomootNavigation(sbn)) return
+        val instruction = when (sbn.packageName) {
+            KomootParser.KOMOOT_PACKAGE -> {
+                if (!KomootParser.isKomootNavigation(sbn)) return
+                KomootParser.parse(sbn)
+            }
+            GoogleMapsParser.GOOGLE_MAPS_PACKAGE -> {
+                if (!GoogleMapsParser.isMapsNavigation(sbn)) return
+                GoogleMapsParser.parse(sbn)
+            }
+            else -> return
+        } ?: return
         activeNavigationKey = sbn.key
-        val instruction = KomootParser.parse(sbn) ?: return
+        activePackage = sbn.packageName
         forward(instruction)
     }
 
     override fun onNotificationRemoved(sbn: StatusBarNotification) {
-        if (sbn.packageName != KomootParser.KOMOOT_PACKAGE) return
         if (sbn.key != activeNavigationKey) return
+        if (sbn.packageName != activePackage) return
+        val pkg = activePackage
         activeNavigationKey = null
-        Log.i(TAG, "Active Komoot navigation notification removed; clearing band")
+        activePackage = null
+        Log.i(TAG, "Active navigation notification removed ($pkg); clearing band")
         forward(null)
     }
 
