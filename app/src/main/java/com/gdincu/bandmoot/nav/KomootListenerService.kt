@@ -22,12 +22,12 @@ class KomootListenerService : NotificationListenerService() {
     private var activePackage: String? = null
 
     override fun onNotificationPosted(sbn: StatusBarNotification) {
-        val instruction = when (sbn.packageName) {
-            KomootParser.KOMOOT_PACKAGE -> {
+        val instruction = when {
+            sbn.packageName == KomootParser.KOMOOT_PACKAGE -> {
                 if (!KomootParser.isKomootNavigation(sbn)) return
                 KomootParser.parse(sbn)
             }
-            GoogleMapsParser.GOOGLE_MAPS_PACKAGE -> {
+            GoogleMapsParser.isMapsPackage(sbn.packageName) -> {
                 if (!GoogleMapsParser.isMapsNavigation(sbn)) return
                 GoogleMapsParser.parse(sbn)
             }
