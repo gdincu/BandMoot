@@ -44,7 +44,7 @@ object GoogleMapsParser {
         if (notif.category == Notification.CATEGORY_NAVIGATION || notif.category == "navigation") return true
         val extras = notif.extras
         val template = extras?.getString("android.template").orEmpty()
-        val ongoing = sbn.isOngoing || (notif.flags and Notification.FLAG_ONGOING_EVENT != 0) != 0
+        val ongoing = sbn.isOngoing || (notif.flags and Notification.FLAG_ONGOING_EVENT) != 0
         val shortCritical = extras?.getCharSequence("android.shortCriticalText")?.toString()?.trim().orEmpty()
         // Android 16 Live Updates use ProgressStyle + ongoing.
         if (template.contains("ProgressStyle") && ongoing) return true
